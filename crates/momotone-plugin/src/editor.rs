@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const WIDTH: u32 = 1020;
-pub const HEIGHT: u32 = 656;
+pub const HEIGHT: u32 = 610;
 
 const BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
 const PANEL: Color32 = Color32::from_rgb(0x07, 0x07, 0x07);
@@ -94,6 +94,10 @@ type AiReply = Arc<std::sync::Mutex<Option<Result<momotone_engine::PatternSpec, 
 /// The AI prompt box.
 #[derive(Default)]
 struct AskUi {
+    /// The AI panel is open (it's optional: closed, nothing of it shows on the main screen).
+    open: bool,
+    /// Where the header's AI button is, to hang the panel under it.
+    anchor: Option<Rect>,
     prompt: String,
     key_input: String,
     editing_key: bool,
@@ -232,7 +236,7 @@ fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
         let tempo_hint = data.cache.as_ref().map_or(120.0, |c| c.1.tempo);
-        header(ui, tempo_hint, shared);
+        header(ui, tempo_hint, shared, (!follower).then_some(&mut data.ask));
         rule(ui);
 
         let cached = view.and(data.cache.clone());
@@ -263,9 +267,6 @@ fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params
             return;
         };
 
-        if !follower {
-            ask_row(ui, setter, params, &mut data.ask);
-        }
         ui.add_space(4.0);
         if follower {
             follower_body(ui, setter, data, params, &plan, &pattern, &settings, part, shared, hw);
@@ -273,6 +274,13 @@ fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params
             main_body(ui, setter, data, params, &plan, &pattern, &settings, shared, hw);
         }
     });
+
+    if !follower {
+        poll_ask(ctx, setter, params, &mut data.ask);
+        if data.ask.open {
+            ask_panel(ctx, &mut data.ask);
+        }
+    }
 }
 
 fn rule(ui: &mut Ui) {
@@ -280,7 +288,7 @@ fn rule(ui: &mut Ui) {
     ui.painter().rect_filled(r, 0.0_f32, LINE);
 }
 
-fn header(ui: &mut Ui, tempo_hint: f64, shared: &UiShared) {
+fn header(ui: &mut Ui, tempo_hint: f64, shared: &UiShared, ask: Option<&mut AskUi>) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("MOMOTONE").font(display(28.0)).color(TEXT));
         ui.add_space(6.0);
@@ -296,6 +304,15 @@ fn header(ui: &mut Ui, tempo_hint: f64, shared: &UiShared) {
                 ui.painter().circle_filled(r.center(), 3.5, MINT);
             } else {
                 ui.label(caps(&format!("signal acquisition... // {tempo:.0} bpm"), 12.0, DIM));
+            }
+            if let Some(a) = ask {
+                ui.add_space(14.0);
+                let label = if a.pending.is_some() { "ai ..." } else { "ai" };
+                let r = btn(ui, label, a.open, MINT, 44.0).on_hover_text("Ask AI (optional): describe a vibe, Claude sets the style, key, energy and chords");
+                if r.clicked() {
+                    a.open = !a.open;
+                }
+                a.anchor = Some(r.rect);
             }
         });
     });
@@ -413,11 +430,9 @@ fn link_selectors(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, fo
 
 // ------------------------------------------------------------------ AI prompt
 
-fn ask_row(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, a: &mut AskUi) {
-    let has_key = *a
-        .has_key
-        .get_or_insert_with(|| ai::load_config().api_key.is_some());
-
+/// Picks up Claude's answer (also with the panel closed): sets the style, key, energy, bars
+/// and the progression.
+fn poll_ask(ctx: &egui::Context, setter: &ParamSetter, params: &MomotoneParams, a: &mut AskUi) {
     // An answer came back: set the style, key, energy, bars and the progression.
     if let Some((prompt, slot)) = &a.pending {
         let done = slot.lock().ok().and_then(|mut s| s.take());
@@ -440,103 +455,113 @@ fn ask_row(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, a: &mut A
                         if let Ok(mut h) = params.ai.write() {
                             *h = Some(applied.harmony);
                         }
-                        (
-                            format!("done // {} · {n} chords", STYLES[applied.style].label),
-                            true,
-                        )
+                        // Done: the chord strip shows the result, the panel gets out of the way.
+                        a.open = false;
+                        (format!("done // {} · {n} chords", STYLES[applied.style].label), true)
                     }
                     Err(e) => (e, false),
                 },
             );
         } else {
-            ui.ctx().request_repaint();
+            ctx.request_repaint();
         }
     }
+}
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        let (r, _) = ui.allocate_exact_size(vec2(58.0, 26.0), Sense::hover());
-        ui.painter().text(
-            r.left_center(),
-            Align2::LEFT_CENTER,
-            "ASK AI",
-            mono(11.0),
-            DIM,
-        );
-
-        if !has_key || a.editing_key {
-            let edit = egui::TextEdit::singleline(&mut a.key_input)
-                .password(true)
-                .hint_text(RichText::new("paste your Claude API key (sk-ant-...)").color(FAINT))
-                .font(mono(13.0))
-                .desired_width(340.0);
-            let resp = ui.add(edit);
-            let save = btn(ui, "save key", true, MINT, 0.0).clicked()
-                || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-            if save && !a.key_input.trim().is_empty() {
-                a.status = Some(match ai::save_api_key(&a.key_input) {
-                    Ok(_) => ("key saved on this computer (not in your set)".into(), true),
-                    Err(e) => (format!("couldn't save the key: {e}"), false),
+/// The optional AI panel, floating under the header's AI button.
+fn ask_panel(ctx: &egui::Context, a: &mut AskUi) {
+    let has_key = *a.has_key.get_or_insert_with(|| ai::load_config().api_key.is_some());
+    let w = 560.0;
+    let pos = a.anchor.map_or(Pos2::new(WIDTH as f32 - w - 22.0, 60.0), |r| Pos2::new(r.right() - w, r.bottom() + 8.0));
+    let resp = egui::Area::new(egui::Id::new("ask-ai"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
+            egui::Frame::NONE.fill(BG).stroke(Stroke::new(1.0_f32, MINT)).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
+                ui.set_width(w - 28.0);
+                ui.spacing_mut().item_spacing = vec2(6.0, 8.0);
+                ui.horizontal(|ui| {
+                    ui.label(caps("ask ai // optional", 12.0, MINT));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if btn(ui, "close", false, MINT, 0.0).clicked() {
+                            a.open = false;
+                        }
+                    });
                 });
-                a.key_input.clear();
-                a.editing_key = false;
-                a.has_key = None;
-            }
-            if has_key && btn(ui, "cancel", false, MINT, 0.0).clicked() {
-                a.editing_key = false;
-            }
-            if !has_key {
-                ui.label(caps("get one at platform.claude.com", 10.0, FAINT));
-            }
-        } else {
-            let busy = a.pending.is_some();
-            let field = egui::TextEdit::singleline(&mut a.prompt)
-                .hint_text(
-                    RichText::new("describe a vibe: dark rolling dub techno, a bit hypnotic")
-                        .color(FAINT),
-                )
-                .font(mono(13.0))
-                .desired_width(ui.available_width() - 190.0);
-            let resp = ui.add_enabled(!busy, field);
-            let go = btn(
-                ui,
-                if busy { "thinking..." } else { "ask" },
-                !busy,
-                MINT,
-                84.0,
-            )
-            .clicked()
-                || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-            if go && !busy && !a.prompt.trim().is_empty() {
-                let prompt = a.prompt.trim().to_string();
-                let slot = Arc::new(std::sync::Mutex::new(None));
-                let out = slot.clone();
-                let ctx = ui.ctx().clone();
-                let asked = prompt.clone();
-                std::thread::spawn(move || {
-                    let result = ai::ask(&ai::load_config(), &asked);
-                    if let Ok(mut s) = out.lock() {
-                        *s = Some(result);
+                ui.label(caps("describe a vibe: claude sets style, key, energy and chords. you can always go back to the style's chords.", 10.0, DIM));
+
+                if !has_key || a.editing_key {
+                    ui.horizontal(|ui| {
+                        let edit = egui::TextEdit::singleline(&mut a.key_input)
+                            .password(true)
+                            .hint_text(RichText::new("paste your Claude API key (sk-ant-...)").color(FAINT))
+                            .font(mono(13.0))
+                            .desired_width(ui.available_width() - 170.0);
+                        let resp = ui.add(edit);
+                        let save = btn(ui, "save key", true, MINT, 0.0).clicked() || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        if save && !a.key_input.trim().is_empty() {
+                            a.status = Some(match ai::save_api_key(&a.key_input) {
+                                Ok(_) => ("key saved on this computer (not in your set)".into(), true),
+                                Err(e) => (format!("couldn't save the key: {e}"), false),
+                            });
+                            a.key_input.clear();
+                            a.editing_key = false;
+                            a.has_key = None;
+                        }
+                        if has_key && btn(ui, "cancel", false, MINT, 0.0).clicked() {
+                            a.editing_key = false;
+                        }
+                    });
+                    if !has_key {
+                        ui.label(caps("needs your own claude api key: get one at platform.claude.com", 10.0, FAINT));
                     }
-                    ctx.request_repaint();
-                });
-                a.pending = Some((prompt, slot));
-                a.status = Some(("asking claude...".into(), true));
-            }
-            if btn(ui, "key", false, MINT, 0.0)
-                .on_hover_text("Change the Claude API key")
-                .clicked()
-            {
-                a.editing_key = true;
-            }
-        }
-    });
-    if let Some((msg, ok)) = &a.status {
-        ui.label(
-            RichText::new(msg)
-                .font(mono(11.0))
-                .color(if *ok { MINT } else { WARN }),
-        );
+                } else {
+                    ui.horizontal(|ui| {
+                        let busy = a.pending.is_some();
+                        let field = egui::TextEdit::singleline(&mut a.prompt)
+                            .hint_text(RichText::new("dark rolling dub techno, a bit hypnotic").color(FAINT))
+                            .font(mono(13.0))
+                            .desired_width(ui.available_width() - 150.0);
+                        let resp = ui.add_enabled(!busy, field);
+                        if a.prompt.is_empty() && !busy {
+                            resp.request_focus();
+                        }
+                        let go = btn(ui, if busy { "thinking..." } else { "ask" }, !busy, MINT, 84.0).clicked()
+                            || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        if go && !busy && !a.prompt.trim().is_empty() {
+                            let prompt = a.prompt.trim().to_string();
+                            let slot = Arc::new(std::sync::Mutex::new(None));
+                            let out = slot.clone();
+                            let ctx = ui.ctx().clone();
+                            let asked = prompt.clone();
+                            std::thread::spawn(move || {
+                                let result = ai::ask(&ai::load_config(), &asked);
+                                if let Ok(mut s) = out.lock() {
+                                    *s = Some(result);
+                                }
+                                ctx.request_repaint();
+                            });
+                            a.pending = Some((prompt, slot));
+                            a.status = Some(("asking claude...".into(), true));
+                        }
+                        if btn(ui, "key", false, MINT, 0.0).on_hover_text("Change the Claude API key").clicked() {
+                            a.editing_key = true;
+                        }
+                    });
+                }
+                if let Some((msg, ok)) = &a.status {
+                    ui.label(RichText::new(msg).font(mono(11.0)).color(if *ok { MINT } else { WARN }));
+                }
+            });
+        });
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        a.open = false;
+    }
+    // A click outside the panel (but not on the AI button) closes it.
+    let clicked_out = ctx.input(|i| i.pointer.any_click())
+        && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !resp.response.rect.contains(p) && !a.anchor.is_some_and(|r| r.contains(p)));
+    if clicked_out {
+        a.open = false;
     }
 }
 
