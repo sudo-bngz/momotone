@@ -16,9 +16,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 mod editor;
+mod link;
 mod params;
 mod player;
-use params::MomotoneParams;
+use params::{MomotoneParams, RoleChoice};
 use player::{Block, Player};
 
 /// Everything that changes which notes are generated (but not how they're played back).
@@ -58,6 +59,8 @@ pub fn settings_from(p: &MomotoneParams) -> GenSettings {
 /// Transport info published by the audio thread for the editor (playhead, tempo).
 #[derive(Default)]
 pub struct UiShared {
+    /// Another main Momotone is publishing in this instance's group.
+    conflict: AtomicBool,
     beat: AtomicU64,
     tempo: AtomicU64,
     playing: AtomicBool,
@@ -74,6 +77,10 @@ impl UiShared {
         (t > 0.0).then_some(t)
     }
 
+    pub fn conflict(&self) -> bool {
+        self.conflict.load(Ordering::Relaxed)
+    }
+
     pub fn playing(&self) -> bool {
         self.playing.load(Ordering::Relaxed)
     }
@@ -81,7 +88,7 @@ impl UiShared {
 
 #[derive(Default)]
 struct Shared {
-    slot: Mutex<Option<Pattern>>,
+    slot: Mutex<Option<(GenSettings, Pattern)>>,
     fresh: AtomicBool,
 }
 
@@ -89,8 +96,14 @@ pub struct Momotone {
     params: Arc<MomotoneParams>,
     shared: Arc<Shared>,
     ui: Arc<UiShared>,
+    id: u64,
     pattern: Pattern,
+    /// What `pattern` was rendered from.
+    current: Option<GenSettings>,
     requested: Option<GenSettings>,
+    /// Beat of the bar line on which the pending pattern may come in.
+    switch_at: f64,
+    last_beat: f64,
     sample_rate: f64,
     player: Player,
 }
@@ -101,8 +114,12 @@ impl Default for Momotone {
             params: Arc::new(MomotoneParams::default()),
             shared: Arc::new(Shared::default()),
             ui: Arc::new(UiShared::default()),
+            id: link::new_instance_id(),
             pattern: Pattern::default(),
+            current: None,
             requested: None,
+            switch_at: f64::NEG_INFINITY,
+            last_beat: 0.0,
             sample_rate: 44_100.0,
             player: Player::default(),
         }
@@ -114,6 +131,31 @@ impl Momotone {
         settings_from(&self.params)
     }
 
+    fn is_follower(&self) -> bool {
+        self.params.role.value() == RoleChoice::Follower
+    }
+
+    fn group(&self) -> usize {
+        (self.params.group.value() - 1).max(0) as usize
+    }
+
+    /// What this instance should play now, and from which beat: its own settings for a main,
+    /// its part of the group's main for a follower (`None` while there is no main yet).
+    fn wanted(&self, beat: f64, playing: bool) -> Option<(GenSettings, f64)> {
+        if self.is_follower() {
+            self.ui.conflict.store(false, Ordering::Relaxed);
+            let (mut s, at) = link::read(self.group())?;
+            s.layers = link::part_layers(self.params.part.value().layer());
+            Some((s, at))
+        } else {
+            let s = self.settings();
+            let at = if self.requested == Some(s) { self.switch_at } else { link::switch_point(beat, playing) };
+            let alone = link::publish(self.group(), self.id, &s, at);
+            self.ui.conflict.store(!alone, Ordering::Relaxed);
+            Some((s, at))
+        }
+    }
+
     /// Takes a freshly rendered pattern if one is ready. Returns true if it changed.
     fn swap_in_pending(&mut self) -> bool {
         if !self.shared.fresh.load(Ordering::Acquire) {
@@ -123,8 +165,9 @@ impl Momotone {
             return false;
         };
         match slot.as_mut() {
-            Some(p) => {
+            Some((s, p)) => {
                 std::mem::swap(&mut self.pattern, p);
+                self.current = Some(*s);
                 self.shared.fresh.store(false, Ordering::Release);
                 true
             }
@@ -178,7 +221,7 @@ impl Plugin for Momotone {
             let pattern = render(&settings);
             if let Ok(mut slot) = shared.slot.lock() {
                 // Dropping the previous contents here keeps deallocation off the audio thread.
-                *slot = Some(pattern);
+                *slot = Some((settings, pattern));
                 shared.fresh.store(true, Ordering::Release);
             }
         })
@@ -193,6 +236,7 @@ impl Plugin for Momotone {
         self.sample_rate = buffer_config.sample_rate as f64;
         let s = self.settings();
         self.pattern = render(&s);
+        self.current = Some(s);
         self.requested = Some(s);
         true
     }
@@ -214,12 +258,6 @@ impl Plugin for Momotone {
         // Incoming MIDI is ignored for now (a "follow the key I play" mode could go here).
         while context.next_event().is_some() {}
 
-        let settings = self.settings();
-        if self.requested != Some(settings) {
-            context.execute_background(settings);
-            self.requested = Some(settings);
-        }
-
         let transport = context.transport();
         let p = &self.params;
         let block = Block {
@@ -234,14 +272,40 @@ impl Plugin for Momotone {
         self.ui.tempo.store(transport.tempo.unwrap_or(0.0).to_bits(), Ordering::Relaxed);
         self.ui.playing.store(transport.playing, Ordering::Relaxed);
 
-        if transport.playing {
-            // New ideas come in on the bar line, so they stay in time.
-            if block.touches_bar_line() && self.swap_in_pending() {
-                self.player.release_all(0);
+        let playing = transport.playing;
+        // Loop brace or seek jumped back: don't wait for a bar we may never reach.
+        if playing && block.start_beat < self.last_beat - 0.01 {
+            self.switch_at = f64::NEG_INFINITY;
+        }
+        self.last_beat = block.end_beat();
+
+        match self.wanted(block.start_beat, playing) {
+            Some((settings, at)) if self.requested != Some(settings) => {
+                context.execute_background(settings);
+                self.requested = Some(settings);
+                self.switch_at = at;
             }
+            Some(_) => {}
+            // Follower without a main: stay silent.
+            None => {
+                self.requested = None;
+                self.player.stop();
+                self.flush(context);
+                return ProcessStatus::Normal;
+            }
+        }
+
+        // New ideas come in on the bar line (the same one for a main and its followers).
+        if link::swap_now(playing, &block, self.switch_at) && self.swap_in_pending() && playing {
+            self.player.release_all(0);
+        }
+        // A follower stays silent until it holds its own part of the main's loop
+        // (just after loading, or after switching role or part).
+        let ready = !self.is_follower()
+            || self.current.map(|c| c.layers) == Some(link::part_layers(self.params.part.value().layer()));
+        if playing && ready {
             self.player.play(&self.pattern, block);
         } else {
-            self.swap_in_pending();
             self.player.stop();
         }
         self.flush(context);
@@ -278,6 +342,16 @@ mod tests {
         assert_eq!(StyleChoice::variants().len(), STYLES.len());
         for (i, name) in StyleChoice::variants().iter().enumerate() {
             assert_eq!(*name, STYLES[i].label);
+        }
+    }
+
+    #[test]
+    fn follower_plays_exactly_the_mains_part() {
+        let main = GenSettings { style: 0, key: 9, bars: 4, seed: 12, energy: 65, layers: Layers::all() };
+        let shared = link::unpack(link::pack(&main)).unwrap();
+        for layer in momotone_engine::Layer::ALL {
+            let follower = GenSettings { layers: link::part_layers(layer), ..shared };
+            assert_eq!(render(&main).only(layer).notes, render(&follower).notes, "{layer:?}");
         }
     }
 
