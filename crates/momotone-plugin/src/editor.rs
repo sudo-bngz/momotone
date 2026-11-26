@@ -1075,7 +1075,7 @@ fn footer(
         if btn(ui, "export midi loop", false, MINT, 150.0).on_hover_text(hint).clicked() {
             let octaves = octaves(params);
             let tempo = shared.tempo().unwrap_or(plan.tempo);
-            data.status = Some(match export(plan, pattern, settings, octaves, tempo) {
+            data.status = Some(match export(&music_dir(), plan, pattern, settings, octaves, tempo) {
                 Ok(dir) => {
                     let msg = format!("saved // {}", dir.display());
                     data.last_export = Some(dir);
@@ -1122,7 +1122,8 @@ fn clean(name: &str) -> String {
 }
 
 /// Writes one folder per idea: one .mid per enabled part plus "All parts.mid".
-fn export(plan: &Plan, pattern: &Pattern, s: &GenSettings, octaves: [i32; Layer::COUNT], tempo: f64) -> std::io::Result<PathBuf> {
+/// Writes the loop into a new folder under `root` (`~/Music/Momotone` in the plugin).
+fn export(root: &Path, plan: &Plan, pattern: &Pattern, s: &GenSettings, octaves: [i32; Layer::COUNT], tempo: f64) -> std::io::Result<PathBuf> {
     let key = plan.key.root.name(plan.key.prefers_flats());
     let name = clean(&format!(
         "{} - {} {} - {:.0} bpm - energy {} - idea {}",
@@ -1133,7 +1134,7 @@ fn export(plan: &Plan, pattern: &Pattern, s: &GenSettings, octaves: [i32; Layer:
         s.energy,
         s.seed
     ));
-    let dir = music_dir().join(name);
+    let dir = root.join(name);
     std::fs::create_dir_all(&dir)?;
 
     let shifted = pattern.transposed(octaves);
@@ -1170,13 +1171,13 @@ mod tests {
 
     #[test]
     fn export_writes_one_file_per_part() {
-        let tmp = std::env::temp_dir().join(format!("momotone-test-{}", std::process::id()));
-        std::env::set_var("HOME", &tmp);
+        // Its own folder, no HOME change: tests run in parallel and share the environment.
+        let tmp = std::env::temp_dir().join(format!("momotone-export-{}", std::process::id()));
         let dub = momotone_engine::style::index_of("dub").unwrap();
         let s = GenSettings { style: dub, key: 9, bars: 4, seed: 3, energy: 60, layers: Layers { arp: false, ..Layers::all() }, ..Default::default() };
         let plan = plan_for(&s);
         let pattern = momotone_engine::generate_seeded(&plan, Layers::all(), s.part_seeds());
-        let dir = export(&plan, &pattern, &s, [0, -1, 0, 1, 0], 72.0).unwrap();
+        let dir = export(&tmp, &plan, &pattern, &s, [0, -1, 0, 1, 0], 72.0).unwrap();
         let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         files.sort();
         assert_eq!(files, ["1 Chords.mid", "2 Bass.mid", "4 Melody.mid", "5 Drums.mid", "All parts.mid"]);
