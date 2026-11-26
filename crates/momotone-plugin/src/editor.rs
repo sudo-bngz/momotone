@@ -8,7 +8,7 @@
 use crate::ai;
 use crate::hwout::{self, HwState};
 use crate::link;
-use crate::params::{KeyChoice, MomotoneParams, PartChoice, RoleChoice};
+use crate::params::{KeyChoice, MomotoneParams, PartChoice, RoleChoice, SectionChoice};
 use crate::{plan_for, settings_from, GenSettings, UiShared};
 use momotone_engine::style::{FAMILIES, STYLES};
 use momotone_engine::{explain, midi, Layer, Layers, Pattern, PitchClass, Plan};
@@ -223,7 +223,8 @@ fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params
     if let Some(settings) = view {
         if data.cache.as_ref().map(|c| c.0) != Some(settings) {
             let plan = plan_for(&settings);
-            let pattern = momotone_engine::generate_seeded(&plan, Layers::all(), settings.part_seeds());
+            // Every part, switched on or not (off ones show dimmed), shaped by the section.
+            let pattern = crate::render(&GenSettings { layers: Layers::all(), ..settings });
             data.selected_chord = data.selected_chord.min(plan.progression.len() - 1);
             data.cache = Some((settings, plan, pattern));
         }
@@ -384,6 +385,34 @@ fn music_selectors(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, s
                 }
             });
     });
+    field(ui, "section", |ui| {
+        let cur = SectionChoice::from_index(s.section);
+        let color = if cur == SectionChoice::Loop { TEXT } else { MINT };
+        egui::ComboBox::from_id_salt("section")
+            .width(96.0)
+            .height(400.0)
+            .selected_text(caps(section_name(cur), 13.0, color))
+            .show_ui(ui, |ui| {
+                for c in SectionChoice::ALL {
+                    if c == SectionChoice::Intro || c == SectionChoice::Song {
+                        ui.separator();
+                    }
+                    if choice(ui, cur == c, section_name(c), if c == SectionChoice::Loop { TEXT } else { MINT }) {
+                        set(setter, &params.section, c);
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Loop: the idea as is. A section: the same idea written for that part of a track (no kick in the break, a snare roll at the end of the build...). Song: every section in a row, from bar 1 of your arrangement");
+    });
+}
+
+fn section_name(c: SectionChoice) -> &'static str {
+    match c.section() {
+        Some(sec) => sec.label(),
+        None if c == SectionChoice::Song => "Song",
+        None => "Loop",
+    }
 }
 
 fn link_selectors(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, follower: bool, group: usize, part: PartChoice) {
@@ -787,9 +816,25 @@ fn main_body(
                     let why = h.explanation.clone().unwrap_or_default();
                     ui.label(RichText::new(format!("ai // \"{}\" → {why}{tempo}", h.prompt)).font(mono(11.0)).color(MINT));
                 }
-                None => {
-                    ui.label(RichText::new(plan.style.blurb).font(mono(11.0)).color(DIM));
-                }
+                None => match SectionChoice::from_index(settings.section) {
+                    SectionChoice::Loop => {
+                        ui.label(RichText::new(plan.style.blurb).font(mono(11.0)).color(DIM));
+                    }
+                    SectionChoice::Song => {
+                        let bars = pattern.length_beats / 4.0;
+                        let tempo = shared.tempo().unwrap_or(plan.tempo);
+                        let secs = pattern.length_beats * 60.0 / tempo;
+                        let line = format!(
+                            "song: {bars:.0} bars, {}:{:02} at {tempo:.0} bpm. follows your arrangement from bar 1: press play there, or export the whole song.",
+                            (secs / 60.0) as u32,
+                            (secs % 60.0) as u32
+                        );
+                        ui.label(RichText::new(line).font(mono(11.0)).color(MINT));
+                    }
+                    c => {
+                        ui.label(RichText::new(c.section().map_or("", |x| x.blurb())).font(mono(11.0)).color(MINT));
+                    }
+                },
             }
         });
     });
@@ -808,8 +853,15 @@ fn main_body(
             }
         });
     });
+    // Song: the sections, over the lanes (drawn once the lanes say where their notes start).
+    let strip = (SectionChoice::from_index(settings.section) == SectionChoice::Song)
+        .then(|| ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover()).0);
+    let mut roll = None;
     for layer in Layer::ALL {
-        part_lane(ui, setter, params, pattern, layer, shared, false, &mut data.ports, hw, settings);
+        roll = Some(part_lane(ui, setter, params, pattern, layer, shared, false, &mut data.ports, hw, settings));
+    }
+    if let (Some(strip), Some(roll)) = (strip, roll) {
+        song_strip(ui, Rect::from_x_y_ranges(roll.x_range(), strip.y_range()), plan, pattern, shared);
     }
     ui.add_space(4.0);
     footer(ui, data, plan, pattern, settings, params, shared);
@@ -832,14 +884,15 @@ fn follower_body(
     let key = plan.key.root.name(plan.key.prefers_flats());
     ui.label(caps(
         &format!(
-            "following group {} // {} · {} {} · {} bars · energy {} % · idea #{}",
+            "following group {} // {} · {} {} · {} bars · energy {} % · idea #{} · {}",
             params.group.value(),
             plan.style.label,
             key,
             plan.key.mode.name(),
             plan.bars,
             settings.energy,
-            settings.seed
+            settings.seed,
+            section_name(SectionChoice::from_index(settings.section))
         ),
         14.0,
         CYAN,
@@ -895,6 +948,30 @@ fn chord_strip(ui: &mut Ui, plan: &Plan, data: &mut EditorData, shared: &UiShare
     ui.label(RichText::new(format!("> {line}")).font(mono(12.0)).color(TEXT));
 }
 
+/// Song mode: the sections over the part lanes, the one playing in mint.
+fn song_strip(ui: &mut Ui, rect: Rect, plan: &Plan, pattern: &Pattern, shared: &UiShared) {
+    {
+        let painter = ui.painter_at(rect);
+        let length = pattern.length_beats.max(1.0);
+        let x_at = |beat: f64| rect.left() + (beat / length) as f32 * rect.width();
+        let now = shared.playing().then(|| shared.beat().rem_euclid(length));
+        for (sec, start, len) in momotone_engine::song::layout(plan.bars) {
+            let r = Rect::from_min_max(Pos2::new(x_at(start), rect.top()), Pos2::new(x_at(start + len), rect.bottom())).shrink2(vec2(1.0, 0.0));
+            let playing = now.is_some_and(|t| t >= start && t < start + len);
+            painter.rect_filled(r, 0.0_f32, if playing { MINT } else { PANEL });
+            painter.rect_stroke(r, 0.0_f32, Stroke::new(1.0_f32, LINE_HI), StrokeKind::Inside);
+            let mut name = sec.label().to_uppercase();
+            if painter.layout_no_wrap(name.clone(), mono(10.0), TEXT).size().x + 4.0 >= r.width() {
+                name = name.chars().take(3).collect();
+            }
+            let galley = painter.layout_no_wrap(name.clone(), mono(10.0), TEXT);
+            if galley.size().x + 4.0 < r.width() {
+                painter.text(r.center(), Align2::CENTER_CENTER, name, mono(10.0), if playing { BG } else { DIM });
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn part_lane(
     ui: &mut Ui,
@@ -907,7 +984,7 @@ fn part_lane(
     ports: &mut PortCache,
     hw: &HwState,
     settings: &GenSettings,
-) {
+) -> Rect {
     let (enabled, octave) = part_params(params, layer);
     // A follower always plays its part; the on/off switches belong to the main.
     let on = follower || enabled.value();
@@ -981,10 +1058,23 @@ fn part_lane(
         painter.rect_stroke(rect, 0.0_f32, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
         let length = pattern.length_beats.max(1.0);
         let x_at = |beat: f64| rect.left() + (beat / length) as f32 * rect.width();
-        for b in 1..length as usize {
-            let stroke = if b % 4 == 0 { Stroke::new(1.0_f32, LINE_HI) } else { Stroke::new(1.0_f32, LINE) };
-            let x = x_at(b as f64);
-            painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], stroke);
+        if length <= 64.0 {
+            for b in 1..length as usize {
+                let stroke = if b % 4 == 0 { Stroke::new(1.0_f32, LINE_HI) } else { Stroke::new(1.0_f32, LINE) };
+                let x = x_at(b as f64);
+                painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], stroke);
+            }
+        } else {
+            // A whole song: a line every 8 bars, brighter where a section starts.
+            let starts: Vec<f64> = momotone_engine::song::layout(settings.bars).iter().map(|l| l.1).collect();
+            for b in (32..length as usize).step_by(32) {
+                let x = x_at(b as f64);
+                painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0_f32, LINE));
+            }
+            for &t in starts.iter().skip(1) {
+                let x = x_at(t);
+                painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0_f32, LINE_HI));
+            }
         }
 
         let notes: Vec<_> = pattern.notes.iter().filter(|n| n.layer == layer).collect();
@@ -1019,7 +1109,9 @@ fn part_lane(
             let x = x_at(shared.beat().rem_euclid(length));
             painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0_f32, TEXT));
         }
-    });
+        rect
+    })
+    .inner
 }
 
 /// OUT (DAW or a hardware port), channel and latency offset of one part.
@@ -1097,7 +1189,8 @@ fn footer(
     rule(ui);
     ui.horizontal(|ui| {
         let hint = "Saves each part as its own .mid, ready to drag onto your machine tracks";
-        if btn(ui, "export midi loop", false, MINT, 150.0).on_hover_text(hint).clicked() {
+        let song = SectionChoice::from_index(settings.section) == SectionChoice::Song;
+        if btn(ui, if song { "export midi song" } else { "export midi loop" }, false, MINT, 150.0).on_hover_text(hint).clicked() {
             let octaves = octaves(params);
             let tempo = shared.tempo().unwrap_or(plan.tempo);
             data.status = Some(match export(&music_dir(), plan, pattern, settings, octaves, tempo) {
@@ -1151,13 +1244,17 @@ fn clean(name: &str) -> String {
 fn export(root: &Path, plan: &Plan, pattern: &Pattern, s: &GenSettings, octaves: [i32; Layer::COUNT], tempo: f64) -> std::io::Result<PathBuf> {
     let key = plan.key.root.name(plan.key.prefers_flats());
     let name = clean(&format!(
-        "{} - {} {} - {:.0} bpm - energy {} - idea {}",
+        "{} - {} {} - {:.0} bpm - energy {} - idea {}{}",
         plan.style.label,
         key,
         plan.key.mode.name(),
         tempo,
         s.energy,
-        s.seed
+        s.seed,
+        match SectionChoice::from_index(s.section) {
+            SectionChoice::Loop => String::new(),
+            c => format!(" - {}", section_name(c).to_lowercase()),
+        }
     ));
     let dir = root.join(name);
     std::fs::create_dir_all(&dir)?;

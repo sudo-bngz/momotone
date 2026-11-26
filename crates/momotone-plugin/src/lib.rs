@@ -52,6 +52,8 @@ pub struct GenSettings {
     pub locks: Locks,
     /// AI harmony in use (its `rev`), 0 = the style's own progressions.
     pub ai: u16,
+    /// 0 = loop, 1..=6 a section (intro, groove, build, drop, break, outro), 7 = the song.
+    pub section: u8,
     /// Energy in percent, so dragging the knob doesn't flood the background thread.
     pub energy: u8,
     pub layers: Layers,
@@ -67,7 +69,12 @@ pub fn plan_for(s: &GenSettings) -> Plan {
 }
 
 pub fn render(s: &GenSettings) -> Pattern {
-    momotone_engine::generate_seeded(&plan_for(s), s.layers, s.part_seeds())
+    let plan = plan_for(s);
+    match params::SectionChoice::from_index(s.section) {
+        params::SectionChoice::Loop => momotone_engine::generate_seeded(&plan, s.layers, s.part_seeds()),
+        params::SectionChoice::Song => momotone_engine::song::song(&plan, s.layers, s.part_seeds()),
+        c => momotone_engine::song::section_loop(&plan, s.layers, s.part_seeds(), c.section().unwrap()),
+    }
 }
 
 impl GenSettings {
@@ -101,6 +108,7 @@ fn settings_from_parts(p: &MomotoneParams) -> GenSettings {
         locks: p.locks.read().map(|l| *l).unwrap_or_default(),
         ai: p.ai.read().ok().and_then(|a| a.as_ref().map(|h| h.rev)).unwrap_or(0),
         energy: (p.energy.value() * 100.0).round().clamp(0.0, 100.0) as u8,
+        section: p.section.value() as u8,
         layers: Layers {
             chords: p.chords.value(),
             bass: p.bass.value(),
@@ -516,7 +524,7 @@ mod tests {
         let mut locks = Locks::default();
         locks.harmony = Some(40);
         locks.parts[1] = Some(77);
-        let main = GenSettings { style: 0, key: 9, bars: 4, seed: 12, energy: 65, layers: Layers::all(), locks, ai: 0 };
+        let main = GenSettings { style: 0, key: 9, bars: 4, seed: 12, energy: 65, layers: Layers::all(), locks, ai: 0, section: 3 };
         let shared = GenSettings { locks: link::unpack_locks(link::pack_locks(&main.locks)), ..link::unpack(link::pack(&main)).unwrap() };
         for layer in momotone_engine::Layer::ALL {
             let follower = GenSettings { layers: link::part_layers(layer), ..shared };
@@ -555,6 +563,7 @@ mod render_fuzz {
                 layers: Layers { chords: next(2) == 1, bass: next(2) == 1, arp: next(2) == 1, melody: next(2) == 1, drums: next(2) == 1 },
                 locks: Locks { harmony: (next(2) == 1).then(|| 1 + next(500)), parts: std::array::from_fn(|_| (next(3) == 1).then(|| 1 + next(500))) },
                 ai: 0,
+                section: next(8) as u8,
             };
             let r = std::panic::catch_unwind(|| render(&s));
             if r.is_err() {
