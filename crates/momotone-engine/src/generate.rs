@@ -217,7 +217,10 @@ struct Hit {
 /// Lays a grid over the whole pattern at the current energy. Each note lasts `gate` of the
 /// gap to the next hit, capped at `max_len` and at the pattern end.
 fn hits(plan: &Plan, g: &str, gate: f64, max_len: f64) -> Vec<Hit> {
-    let cells = grid::parse(g);
+    hits_of(plan, &grid::parse(g), gate, max_len)
+}
+
+fn hits_of(plan: &Plan, cells: &[Option<u8>], gate: f64, max_len: f64) -> Vec<Hit> {
     let level = grid::level(plan.energy);
     let end = plan.length_beats();
     let on: Vec<(usize, u8)> = (0..plan.total_steps())
@@ -364,37 +367,176 @@ fn arp(plan: &Plan, voicings: &[Vec<i32>], rng: &mut Rng, out: &mut Vec<Note>) {
 
 // ---------------------------------------------------------------- drums
 
-/// Kick, snare/clap, hats and percussion from the style's kit, plus a snare fill into the
-/// loop point at high energy (it only adds hits, so turning Energy up never removes any).
+/// Kick, snare/clap, hats and percussion from the style's kit, varied by the idea, plus a fill
+/// into the loop point at high energy. Every choice is drawn before Energy is looked at, so
+/// for one idea turning Energy up only adds hits, never moves or removes any.
 fn drums(plan: &Plan, rng: &mut Rng, out: &mut Vec<Note>) {
     use crate::style::{CLOSED_HAT, KICK, OPEN_HAT};
     let kit = plan.style.drums;
-    let voices: [(&str, u8, f64, f64, i32); 5] = [
-        (kit.kick, KICK, 0.9, 0.25, 8),
-        (kit.snare, kit.snare_note, 0.9, 0.25, 4),
-        (kit.hat, CLOSED_HAT, 0.5, 0.12, -10),
-        (kit.open_hat, OPEN_HAT, 0.9, 0.5, -4),
-        (kit.perc, kit.perc_note, 0.5, 0.15, -12),
+    let mut feel = rng.fork(0xD5);
+    let kick = vary(&mut feel, kit.kick, Voice::Kick);
+    let snare = vary(&mut feel, kit.snare, Voice::Snare);
+    let hat = vary(&mut feel, kit.hat, Voice::Hat);
+    let open_hat = vary(&mut feel, kit.open_hat, Voice::OpenHat);
+    let perc = vary(&mut feel, kit.perc, Voice::Perc);
+    let fill = *feel.pick(&[Fill::SnareRoll, Fill::SnareRoll, Fill::KickSnare, Fill::Perc, Fill::OpenHat, Fill::Toms]);
+    let fill_beats = if feel.chance(0.3) { 2usize } else { 1 };
+
+    let voices: [Voicing; 5] = [
+        (&kick, KICK, 0.9, 0.25, 8),
+        (&snare, kit.snare_note, 0.9, 0.25, 4),
+        (&hat, CLOSED_HAT, 0.5, 0.12, -10),
+        (&open_hat, OPEN_HAT, 0.9, 0.5, -4),
+        (&perc, kit.perc_note, 0.5, 0.15, -12),
     ];
-    for (grid, note, gate, max_len, accent) in voices {
-        for h in hits(plan, grid, gate, max_len) {
+    for (cells, note, gate, max_len, accent) in voices {
+        for h in hits_of(plan, cells, gate, max_len) {
             let v = vel(rng, plan, h.step, h.threshold) as i32 + accent;
             out.push(Note { start: h.start, length: h.len, pitch: note, velocity: v.clamp(1, 127) as u8, layer: Layer::Drums });
         }
     }
 
-    // Fill: 16th snares rising over the last beat of the loop, at 70 % energy and up.
-    if plan.bars >= 2 && plan.energy >= 0.7 {
-        let last_bar = (plan.bars - 1) as usize * crate::grid::STEPS_PER_BAR;
-        for (k, step) in (last_bar + 12..last_bar + 16).enumerate() {
-            let start = plan.step_time(step);
-            let taken = out.iter().any(|n| n.layer == Layer::Drums && n.pitch == kit.snare_note && (n.start - start).abs() < 1e-6);
-            if !taken {
-                let v = 70 + 12 * k as i32 + rng.range(-3, 3);
-                out.push(Note { start, length: 0.12, pitch: kit.snare_note, velocity: v.clamp(1, 127) as u8, layer: Layer::Drums });
+    // Fill over the last beat (or two, at peak energy) of the loop, at 70 % energy and up.
+    if plan.bars < 2 || plan.energy < 0.7 {
+        return;
+    }
+    let beats = if plan.energy >= 0.9 { fill_beats } else { 1 };
+    let end = plan.bars as usize * crate::grid::STEPS_PER_BAR;
+    let from = end - 4 * beats;
+    let start_of = |step: usize| plan.step_time(step);
+    let has = |out: &Vec<Note>, pitch: u8, start: f64| {
+        out.iter().any(|n| n.layer == Layer::Drums && n.pitch == pitch && (n.start - start).abs() < 1e-6)
+    };
+    let add = |out: &mut Vec<Note>, step: usize, pitch: u8, v: i32, len: f64| {
+        let start = start_of(step);
+        if !has(out, pitch, start) {
+            out.push(Note { start, length: len, pitch, velocity: v.clamp(1, 127) as u8, layer: Layer::Drums });
+        }
+    };
+    for (k, step) in (from..end).enumerate() {
+        let rise = 70 + (k * 48 / (end - from)) as i32 + rng.range(-3, 3);
+        match fill {
+            Fill::SnareRoll => add(out, step, kit.snare_note, rise, 0.12),
+            Fill::KickSnare => {
+                let pitch = if k % 2 == 0 { KICK } else { kit.snare_note };
+                add(out, step, pitch, rise, 0.12)
+            }
+            Fill::Perc => add(out, step, kit.perc_note, rise - 6, 0.12),
+            Fill::OpenHat => {
+                if step % 2 == 0 {
+                    add(out, step, OPEN_HAT, rise - 4, 0.25)
+                }
+            }
+            Fill::Toms => {
+                // High tom down to low tom (GM 50, 48, 47, 45), one per 8th.
+                if step % 2 == 0 {
+                    let toms = [50u8, 48, 47, 45];
+                    let i = (k / 2) * toms.len() / (end - from).div_ceil(2);
+                    add(out, step, toms[i.min(toms.len() - 1)], rise, 0.2)
+                }
             }
         }
     }
+}
+
+/// A drum voice: its grid, GM note, gate, longest note and velocity accent.
+type Voicing<'a> = (&'a [Option<u8>], u8, f64, f64, i32);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fill {
+    SnareRoll,
+    KickSnare,
+    Perc,
+    OpenHat,
+    Toms,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Voice {
+    Kick,
+    Snare,
+    Hat,
+    OpenHat,
+    Perc,
+}
+
+/// One idea's take on a kit grid, two bars long (the second bar answers the first). The
+/// style's core hits (threshold 0) on kick and snare always stay, so the genre stays
+/// recognisable; the optional hits move between energy levels, some go, ghost notes come
+/// in, percussion shifts around the bar and hats change their feel.
+fn vary(rng: &mut Rng, grid: &str, voice: Voice) -> Vec<Option<u8>> {
+    use crate::grid::STEPS_PER_BAR as BAR;
+    let src = grid::parse(grid);
+    let n = src.len().max(2 * BAR);
+    let mut cells: Vec<Option<u8>> = (0..n).map(|s| src[s % src.len()]).collect();
+    let empty = src.iter().all(Option::is_none);
+    let core = |c: Option<u8>| c == Some(0) && matches!(voice, Voice::Kick | Voice::Snare);
+
+    // Percussion moves around the bar as a whole.
+    if voice == Voice::Perc && !empty {
+        let shift = *rng.pick(&[0usize, 0, 2, 3, 6, 10, 11]);
+        cells.rotate_right(shift % n);
+    }
+
+    // Optional hits: come in at another energy level, or sit this idea out.
+    let drop = match voice {
+        Voice::Kick | Voice::Snare => 0.15,
+        Voice::Hat => 0.1,
+        Voice::OpenHat | Voice::Perc => 0.25,
+    };
+    for c in cells.iter_mut() {
+        if let Some(t) = *c {
+            if core(Some(t)) || t == 0 {
+                continue;
+            }
+            if rng.chance(drop) {
+                *c = None;
+            } else {
+                *c = Some((t as i32 + rng.range(-2, 2)).clamp(1, 9) as u8);
+            }
+        }
+    }
+
+    // New ghost notes on free 16ths.
+    let (count, lo) = match voice {
+        Voice::Kick => (rng.range(0, 2), 4),
+        Voice::Snare => (rng.range(0, 3), 5),
+        Voice::Hat => (rng.range(0, 4), 5),
+        Voice::OpenHat => (if empty { 0 } else { rng.range(0, 1) }, 5),
+        Voice::Perc => (if empty { rng.range(0, 1) * 3 } else { rng.range(0, 3) }, 4),
+    };
+    for _ in 0..count {
+        let step = rng.range(0, n as i32 - 1) as usize;
+        // Kicks and snares keep off the main beats (those belong to the groove).
+        let on_beat = step.is_multiple_of(4);
+        if cells[step].is_none() && !(on_beat && matches!(voice, Voice::Kick | Voice::Snare)) {
+            cells[step] = Some(rng.range(lo, 9) as u8);
+        }
+    }
+
+    // Hat feel: as written, offbeats only, or a 16th shuffle filling in at high energy.
+    if voice == Voice::Hat && !empty {
+        match rng.weighted(&[0.5, 0.2, 0.3]) {
+            1 => {
+                for (s, c) in cells.iter_mut().enumerate() {
+                    if s % 4 == 2 && c.is_none() {
+                        *c = Some(2);
+                    } else if s % 4 == 0 {
+                        *c = None;
+                    }
+                }
+            }
+            2 => {
+                for (s, c) in cells.iter_mut().enumerate() {
+                    if c.is_none() && s % 2 == 1 {
+                        *c = Some(if s % 4 == 3 { 7 } else { 8 });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    cells
 }
 
 // ---------------------------------------------------------------- melody
@@ -605,9 +747,48 @@ mod tests {
         // A fill appears in the last bar only at high energy.
         let busy = crate::style::find("techno").unwrap().plan(PitchClass::parse("A").unwrap(), 4, 0.9, 1);
         let q = generate(&busy, Layers { drums: true, ..Layers::none() }, 1);
-        let fill = q.notes.iter().filter(|n| n.pitch == busy.style.drums.snare_note && n.start >= 15.0).count();
-        assert!(fill >= 4, "{fill}");
+        let late = |p: &Pattern| p.notes.iter().filter(|n| n.start >= 15.0).count();
+        assert!(late(&q) >= late(&p) + 2, "{} vs {}", late(&q), late(&p));
         assert_eq!(MIDI_DRUM_CHANNEL, Layer::Drums.channel());
+    }
+
+    #[test]
+    fn each_idea_has_its_own_drums_on_the_same_core() {
+        use crate::style::{KICK, STYLES};
+        let drums = Layers { drums: true, ..Layers::none() };
+        for style in STYLES.iter() {
+            let plan = style.plan(PitchClass::parse("C").unwrap(), 4, 0.6, 1);
+            let core = |g: &str| grid::parse(g).iter().enumerate().filter(|(_, c)| **c == Some(0)).map(|(s, _)| s).collect::<Vec<_>>();
+            let mut seen = std::collections::HashSet::new();
+            for idea in 1..=12u64 {
+                let p = generate(&plan, drums, idea);
+                let at = |pitch: u8, step: usize| p.notes.iter().any(|n| n.pitch == pitch && (n.start - plan.step_time(step)).abs() < 1e-6);
+                for bar in 0..plan.bars as usize {
+                    for s in core(style.drums.kick) {
+                        let step = bar * grid::STEPS_PER_BAR * (style.drums.kick.len() / grid::STEPS_PER_BAR).max(1) + s;
+                        if step < plan.total_steps() {
+                            assert!(at(KICK, step), "{} idea {idea}: core kick at step {step}", style.id);
+                        }
+                    }
+                }
+                seen.insert(p.notes.iter().map(|n| (n.pitch, (n.start * 4.0).round() as i64)).collect::<Vec<_>>());
+            }
+            assert!(seen.len() >= 8, "{}: only {} different drum grooves in 12 ideas", style.id, seen.len());
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn print_drum_ideas() {
+        let plan = crate::style::find("dub-techno").unwrap().plan(PitchClass::parse("F").unwrap(), 2, 0.83, 1);
+        for idea in 1..=4u64 {
+            let p = generate(&plan, Layers { drums: true, ..Layers::none() }, idea);
+            println!("idea {idea}");
+            for (name, pitch) in [("kick ", 36u8), ("snare", plan.style.drums.snare_note), ("hat  ", 42), ("open ", 46), ("perc ", plan.style.drums.perc_note)] {
+                let row: String = (0..plan.total_steps()).map(|s| if p.notes.iter().any(|n| n.pitch == pitch && (n.start - plan.step_time(s)).abs() < 1e-6) { 'x' } else { '.' }).collect();
+                println!("  {name} {row}");
+            }
+        }
     }
 
     const MIDI_DRUM_CHANNEL: u8 = 9;
