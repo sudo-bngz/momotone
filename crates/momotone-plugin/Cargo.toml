@@ -16,10 +16,11 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["a
 nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
 midir = "0.9"
 rtrb = "0.2"
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-serde_json = "1"
 
 [features]
 # Standalone app (no DAW), handy to try the UI: cargo run -p momotone-plugin --features standalone

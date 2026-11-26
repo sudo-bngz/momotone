@@ -37,6 +37,7 @@ pub fn pack(s: &GenSettings) -> u64 {
         | (s.bars as u64 & 0x1F) << 10
         | (s.energy as u64 & 0x7F) << 15
         | (s.seed & 0xFFFF) << 22
+        | (s.ai as u64) << 38
 }
 
 /// The shared settings; `layers` is left to the reader.
@@ -47,6 +48,7 @@ pub fn unpack(v: u64) -> Option<GenSettings> {
         bars: (v >> 10 & 0x1F) as u32,
         energy: (v >> 15 & 0x7F) as u8,
         seed: v >> 22 & 0xFFFF,
+        ai: (v >> 38 & 0xFFFF) as u16,
         layers: Layers::all(),
         locks: Locks::default(),
     })
@@ -137,7 +139,7 @@ mod tests {
 
     #[test]
     fn packing_round_trips() {
-        let s = GenSettings { style: 35, key: 11, bars: 16, seed: 500, energy: 100, layers: Layers::all(), ..Default::default() };
+        let s = GenSettings { style: 35, key: 11, bars: 16, seed: 500, energy: 100, layers: Layers::all(), ai: 0xBEEF, ..Default::default() };
         assert_eq!(unpack(pack(&s)), Some(s));
         assert_eq!(unpack(0), None);
     }
@@ -147,7 +149,7 @@ mod tests {
         let mut locks = Locks::default();
         locks.harmony = Some(500);
         locks.parts[4] = Some(1);
-        let s = GenSettings { style: 2, key: 3, bars: 4, seed: 42, energy: 55, layers: Layers::all(), locks };
+        let s = GenSettings { style: 2, key: 3, bars: 4, seed: 42, energy: 55, layers: Layers::all(), locks, ai: 0 };
         let id = new_instance_id();
         assert!(publish(3, id, &s, 8.0));
         assert!(publish(3, id, &s, 8.0));

@@ -43,6 +43,24 @@ Click the **padlock** next to a part to keep it while you browse ideas: *New ide
 - **Lock the bass and the harmony** to keep the bass exactly as it is, note for note, while everything else changes.
 - The counter under *New idea* shows how many things are locked; **Unlock** frees them all. Locks are saved with your Live set, and followers play the main's locked parts too.
 
+## Ask AI: describe a vibe
+
+Type what you hear in your head in the **Ask AI** box and press Enter: *"dark rolling dub techno, a bit hypnotic"*, *"rainy-night garage, a bit soulful"*, *"acid at 4am"*. Claude picks the **style, key, bars and energy**, writes a **chord progression** for it, and the line under the chords says why (and which tempo it suggests).
+
+- The chords Claude wrote replace the style's own: the header shows **AI HARMONY**. *New idea* and the parts still work as usual (grooves, bass, melody come from the style). **Back to style chords** returns to the style's progressions.
+- The AI harmony is saved with your Live set, and followers play it too.
+- Claude never writes notes, only a small JSON spec that the engine checks; a reply that isn't usable music is refused, so you always get a playable loop.
+
+**API key.** Ask AI calls the Claude API with your own key (create one at [console.anthropic.com](https://console.anthropic.com)). The first time, the box asks for it; click **key** later to change it. It's stored only on your computer, readable only by you:
+
+| OS | file |
+|---|---|
+| macOS | `~/Library/Application Support/Momotone/config.json` |
+| Windows | `%APPDATA%\Momotone\config.json` |
+| Linux | `~/.config/momotone/config.json` |
+
+The `ANTHROPIC_API_KEY` environment variable overrides the file. The default model is `claude-haiku-5-5` (fast and cheap: a prompt costs a fraction of a cent); set `"model"` in the file to use another one. Nothing is sent except the text you type and Momotone's instructions.
+
 ## The screen
 
 ![Momotone](docs/momotone-ui.png)
@@ -51,6 +69,7 @@ Click the **padlock** next to a part to keep it while you browse ideas: *New ide
 - **Energy** knob: *laid back* → *peak time*. **Idea** knob: browse ideas; ◀ ▶ step one by one, **New idea** jumps to a random one. Knobs: drag up/down, Shift for fine, double-click to reset.
 - **Chords**: hover a chord to read what it does; the one playing is outlined in mint.
 - **Parts**: click the name to switch a part on/off, small knob = octave, then its notes with the playhead.
+- **Ask AI**: describe a vibe, Claude sets everything (see above).
 - **Role / Group**: main or follower (see the workflow below).
 - **Export MIDI loop**: writes a folder to `~/Music/Momotone/` (style, key, tempo, energy, idea) with one `.mid` per part plus `All parts.mid`. Add that folder to Live's *Places* once and every export shows up in the browser.
 
@@ -187,7 +206,7 @@ UK garage bass     "0..3..1.....2.4.0..3..1...5.2..7"   (2 bars)
 
 - [x] Custom UI: style buttons, energy fader, chord strip, "New idea", piano-roll preview, MIDI export
 - [ ] Drag a part from the plugin straight onto a DAW track (native OS drag, macOS first)
-- [ ] AI prompt box (LLM call from a background thread)
+- [x] Ask AI: a vibe in words sets style, key, energy and chords (Claude API, your own key)
 - [x] Lock a part (or the harmony) and regenerate the rest
 - [ ] Locks on the Push (buttons)
 - [x] Direct hardware MIDI out per part (port, channel, latency offset)
