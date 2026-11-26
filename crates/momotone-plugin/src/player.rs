@@ -2,7 +2,7 @@
 //! sample-accurate note on/off events. Kept free of nih-plug types so it can be tested
 //! by simulating a host transport.
 
-use momotone_engine::Pattern;
+use momotone_engine::{Layer, Pattern};
 
 pub const MAX_ACTIVE: usize = 512;
 pub const MAX_EVENTS: usize = 2048;
@@ -30,10 +30,10 @@ pub struct Block {
     pub beats_per_sample: f64,
     pub samples: usize,
     /// Octave shift per layer (chords, bass, arp, melody).
-    pub octaves: [i32; 4],
+    pub octaves: [i32; Layer::COUNT],
     pub split_channels: bool,
     /// Which layers this player plays (chords, bass, arp, melody).
-    pub mask: [bool; 4],
+    pub mask: [bool; Layer::COUNT],
     /// Send everything on this channel (0-based) instead of the per-layer channels.
     pub channel: Option<u8>,
 }
@@ -92,6 +92,20 @@ impl Player {
         }
     }
 
+    /// Note-offs for every active note that ends before `beat`, at its own end time.
+    fn release_until(&mut self, beat: f64, to_offset: &dyn Fn(f64) -> u32) {
+        let mut i = 0;
+        while i < self.active.len() {
+            let a = self.active[i];
+            if a.end_beat < beat {
+                self.push(Ev { offset: to_offset(a.end_beat), on: false, channel: a.channel, note: a.note, velocity: 0.0 });
+                self.active.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     pub fn stop(&mut self) {
         self.release_all(0);
         self.was_playing = false;
@@ -114,48 +128,46 @@ impl Player {
         let to_offset =
             |beat: f64| -> u32 { (((beat - start) / b.beats_per_sample).floor().max(0.0) as u32).min(last) };
 
-        let mut i = 0;
-        while i < self.active.len() {
-            let a = self.active[i];
-            if a.end_beat < end {
-                self.push(Ev { offset: to_offset(a.end_beat), on: false, channel: a.channel, note: a.note, velocity: 0.0 });
-                self.active.swap_remove(i);
-            } else {
-                i += 1;
-            }
-        }
-
-        // The pattern loops forever, aligned to the host's beat 1.
+        // The pattern loops forever, aligned to the host's beat 1. Walk it loop by loop so
+        // notes come in time order even when the block crosses the loop point (a retrigger
+        // must close the earlier note, not the later one).
         let length = pattern.length_beats;
-        for n in &pattern.notes {
-            if !b.mask[n.layer.index()] {
-                continue;
-            }
-            let pitch = n.pitch as i32 + b.octaves[n.layer.index()] * 12;
-            if !(0..=127).contains(&pitch) {
-                continue;
-            }
-            let note = pitch as u8;
-            let channel = b.channel.unwrap_or(if b.split_channels { n.layer.channel() } else { 0 });
-            let mut t = n.start + ((start - n.start) / length).ceil() * length;
-            while t < end {
-                // Nothing before the song's beat 1 (a delayed hardware window starts below 0).
-                if t >= start && t >= 0.0 {
-                    let offset = to_offset(t);
-                    // Retrigger: close the same note if it is still ringing.
-                    if let Some(j) = self.active.iter().position(|a| a.note == note && a.channel == channel) {
-                        self.active.swap_remove(j);
-                        self.push(Ev { offset, on: false, channel, note, velocity: 0.0 });
-                    }
-                    self.push(Ev { offset, on: true, channel, note, velocity: n.velocity as f32 / 127.0 });
-                    if self.active.len() < self.active.capacity() {
-                        self.active.push(ActiveNote { note, channel, end_beat: t + n.length });
-                    }
+        let first = (start / length).floor() as i64;
+        let last = (end / length).floor() as i64;
+        for k in first..=last {
+            let base = k as f64 * length;
+            for n in &pattern.notes {
+                if !b.mask[n.layer.index()] {
+                    continue;
                 }
-                t += length;
+                let t = base + n.start;
+                // Nothing before the song's beat 1 (a delayed hardware window starts below 0).
+                if t < start || t >= end || t < 0.0 {
+                    continue;
+                }
+                // Drum notes are instruments, so octave shifts leave them alone.
+                let shift = if n.layer == Layer::Drums { 0 } else { b.octaves[n.layer.index()] };
+                let pitch = n.pitch as i32 + shift * 12;
+                if !(0..=127).contains(&pitch) {
+                    continue;
+                }
+                let note = pitch as u8;
+                let channel = b.channel.unwrap_or(if b.split_channels { n.layer.channel() } else { 0 });
+                let offset = to_offset(t);
+                // Close what ended before this note, in time, then retrigger if still ringing.
+                self.release_until(t, &to_offset);
+                if let Some(j) = self.active.iter().position(|a| a.note == note && a.channel == channel) {
+                    self.active.swap_remove(j);
+                    self.push(Ev { offset, on: false, channel, note, velocity: 0.0 });
+                }
+                self.push(Ev { offset, on: true, channel, note, velocity: n.velocity as f32 / 127.0 });
+                if self.active.len() < self.active.capacity() {
+                    self.active.push(ActiveNote { note, channel, end_beat: t + n.length });
+                }
             }
         }
 
+        self.release_until(end, &to_offset);
         self.next_beat = end;
         self.was_playing = true;
         self.sort();
@@ -178,7 +190,7 @@ mod tests {
     }
 
     fn block(beat: f64, bps: f64, samples: usize) -> Block {
-        Block { start_beat: beat, beats_per_sample: bps, samples, octaves: [0, -1, 1, 0], split_channels: true, mask: [true; 4], channel: None }
+        Block { start_beat: beat, beats_per_sample: bps, samples, octaves: [0, -1, 1, 0, 0], split_channels: true, mask: [true; Layer::COUNT], channel: None }
     }
 
     /// Runs the player like a host would and checks note on/off pairing. Returns note-ons.
@@ -203,7 +215,7 @@ mod tests {
                     assert!(sounding.insert((e.channel, e.note)), "double note-on {:?}", (e.channel, e.note));
                     ons += 1;
                 } else {
-                    assert!(sounding.remove(&(e.channel, e.note)), "note-off without note-on");
+                    assert!(sounding.remove(&(e.channel, e.note)), "note-off without note-on {:?} beat {beat} samples {samples}", e);
                 }
             }
             beat += samples as f64 * bps;
@@ -244,7 +256,7 @@ mod tests {
         let mut player = Player::default();
         let mut ons = 0;
         for k in 0..800 {
-            let b = Block { mask: [false, true, false, false], channel: Some(9), ..block(k as f64 * 512.0 * bps, bps, 512) };
+            let b = Block { mask: [false, true, false, false, false], channel: Some(9), ..block(k as f64 * 512.0 * bps, bps, 512) };
             player.play(&p, b);
             for e in player.events.drain(..) {
                 assert_eq!(e.channel, 9);
