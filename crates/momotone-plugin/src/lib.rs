@@ -55,7 +55,13 @@ pub fn settings_from(p: &MomotoneParams) -> GenSettings {
         bars: p.bars.value() as u32,
         seed: p.variation.value() as u64,
         energy: (p.energy.value() * 100.0).round().clamp(0.0, 100.0) as u8,
-        layers: Layers { chords: p.chords.value(), bass: p.bass.value(), arp: p.arp.value(), melody: p.melody.value() },
+        layers: Layers {
+            chords: p.chords.value(),
+            bass: p.bass.value(),
+            arp: p.arp.value(),
+            melody: p.melody.value(),
+            drums: p.drums.value(),
+        },
     }
 }
 
@@ -89,6 +95,32 @@ impl UiShared {
     }
 }
 
+/// Renders requested patterns into `shared.slot`, newest request first; exits when the
+/// plugin drops the sender.
+fn spawn_renderer(shared: Arc<Shared>, mut rx: rtrb::Consumer<GenSettings>) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("momotone-render".into())
+        .spawn(move || loop {
+            let mut latest = None;
+            while let Ok(s) = rx.pop() {
+                latest = Some(s);
+            }
+            match latest {
+                Some(settings) => {
+                    let pattern = render(&settings);
+                    if let Ok(mut slot) = shared.slot.lock() {
+                        // Dropping the previous contents here keeps deallocation off the audio thread.
+                        *slot = Some((settings, pattern));
+                        shared.fresh.store(true, Ordering::Release);
+                    }
+                }
+                None if rx.is_abandoned() => return,
+                None => std::thread::sleep(std::time::Duration::from_millis(2)),
+            }
+        })
+        .expect("spawn render thread")
+}
+
 #[derive(Default)]
 struct Shared {
     slot: Mutex<Option<(GenSettings, Pattern)>>,
@@ -113,6 +145,9 @@ pub struct Momotone {
     hw: Arc<HwState>,
     hw_tx: Option<hwout::Producer>,
     hw_thread: Option<std::thread::JoinHandle<()>>,
+    /// Requests to our own render thread (see `spawn_renderer`).
+    render_tx: Option<rtrb::Producer<GenSettings>>,
+    render_thread: Option<std::thread::JoinHandle<()>>,
     router: Router,
     routes: [Option<Route>; hwout::PARTS],
 }
@@ -134,6 +169,8 @@ impl Default for Momotone {
             hw: Arc::new(HwState::default()),
             hw_tx: None,
             hw_thread: None,
+            render_tx: None,
+            render_thread: None,
             router: Router::default(),
             routes: [None; hwout::PARTS],
         }
@@ -206,7 +243,8 @@ impl Drop for Momotone {
     /// "all notes off" to the machines, then exits.
     fn drop(&mut self) {
         self.hw_tx = None;
-        if let Some(thread) = self.hw_thread.take() {
+        self.render_tx = None;
+        for thread in [self.hw_thread.take(), self.render_thread.take()].into_iter().flatten() {
             let _ = thread.join();
         }
     }
@@ -230,7 +268,10 @@ impl Plugin for Momotone {
     const MIDI_OUTPUT: MidiConfig = MidiConfig::Basic;
 
     type SysExMessage = ();
-    type BackgroundTask = GenSettings;
+    // Patterns are rendered on our own thread (see `spawn_renderer`), not nih-plug's shared
+    // background worker: that worker can abort the host when a plugin instance is removed
+    // right after scheduling a task.
+    type BackgroundTask = ();
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
@@ -238,18 +279,6 @@ impl Plugin for Momotone {
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         editor::create(self.params.clone(), self.ui.clone(), self.hw.clone())
-    }
-
-    fn task_executor(&mut self) -> TaskExecutor<Self> {
-        let shared = self.shared.clone();
-        Box::new(move |settings| {
-            let pattern = render(&settings);
-            if let Ok(mut slot) = shared.slot.lock() {
-                // Dropping the previous contents here keeps deallocation off the audio thread.
-                *slot = Some((settings, pattern));
-                shared.fresh.store(true, Ordering::Release);
-            }
-        })
     }
 
     fn initialize(
@@ -263,6 +292,11 @@ impl Plugin for Momotone {
         self.pattern = render(&s);
         self.current = Some(s);
         self.requested = Some(s);
+        if self.render_tx.is_none() {
+            let (tx, rx) = rtrb::RingBuffer::new(64);
+            self.render_thread = Some(spawn_renderer(self.shared.clone(), rx));
+            self.render_tx = Some(tx);
+        }
         if self.hw_tx.is_none() {
             // The sender thread owns the MIDI ports; it stops when the plugin drops `hw_tx`.
             let (tx, rx) = hwout::queue();
@@ -300,9 +334,9 @@ impl Plugin for Momotone {
             start_beat: transport.pos_beats().unwrap_or(self.player.next_beat()),
             beats_per_sample: transport.tempo.unwrap_or(120.0).max(1.0) / 60.0 / self.sample_rate,
             samples: buffer.samples(),
-            octaves: [p.oct_chords.value(), p.oct_bass.value(), p.oct_arp.value(), p.oct_melody.value()],
+            octaves: [p.oct_chords.value(), p.oct_bass.value(), p.oct_arp.value(), p.oct_melody.value(), 0],
             split_channels: p.split_channels.value(),
-            mask: [true; 4],
+            mask: [true; momotone_engine::Layer::COUNT],
             channel: None,
         };
         // Parts routed to hardware leave the DAW output.
@@ -330,9 +364,11 @@ impl Plugin for Momotone {
 
         match self.wanted(block.start_beat, playing) {
             Some((settings, at)) if self.requested != Some(settings) => {
-                context.execute_background(settings);
-                self.requested = Some(settings);
-                self.switch_at = at;
+                // If the queue is full, try again on the next block.
+                if self.render_tx.as_mut().is_some_and(|tx| tx.push(settings).is_ok()) {
+                    self.requested = Some(settings);
+                    self.switch_at = at;
+                }
             }
             Some(_) => {}
             // Follower without a main: stay silent.
@@ -364,7 +400,7 @@ impl Plugin for Momotone {
             self.player.stop();
         }
         if let Some(tx) = self.hw_tx.as_mut() {
-            let all = Block { mask: [true; 4], ..block };
+            let all = Block { mask: [true; momotone_engine::Layer::COUNT], ..block };
             self.router.process(&self.pattern, all, self.routes, tempo, self.sample_rate, playing && ready, t0, tx);
         }
         self.flush(context);
@@ -418,5 +454,36 @@ mod tests {
     fn render_is_deterministic() {
         let s = GenSettings { style: 0, key: 5, bars: 4, seed: 9, energy: 70, layers: Layers::all() };
         assert_eq!(render(&s).notes, render(&s).notes);
+    }
+}
+
+#[cfg(test)]
+mod render_fuzz {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn any_parameters_render() {
+        let mut x: u64 = 0x2545F4914F6CDD1D;
+        let mut next = |m: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % m
+        };
+        for i in 0..400_000u64 {
+            let s = GenSettings {
+                style: next(STYLES.len() as u64) as usize,
+                key: next(12) as usize,
+                bars: 1 + next(8) as u32,
+                seed: 1 + next(500),
+                energy: next(101) as u8,
+                layers: Layers { chords: next(2) == 1, bass: next(2) == 1, arp: next(2) == 1, melody: next(2) == 1, drums: next(2) == 1 },
+            };
+            let r = std::panic::catch_unwind(|| render(&s));
+            if r.is_err() {
+                panic!("iteration {i}: {s:?}");
+            }
+        }
     }
 }
