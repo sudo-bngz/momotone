@@ -135,24 +135,33 @@ impl Pattern {
 /// Renders the plan. Each layer has its own random stream, so muting one layer never
 /// changes what the others play.
 pub fn generate(plan: &Plan, layers: Layers, seed: u64) -> Pattern {
-    let rng = Rng::new(seed);
+    generate_seeded(plan, layers, [seed; Layer::COUNT])
+}
+
+/// Like [`generate`], with one seed per part (chords, bass, arp, melody, drums). A part keeps
+/// its own choices (groove, motif, voicing, fills) as long as its seed stays the same, and
+/// follows whatever harmony the plan holds. That is what locking a part means.
+pub fn generate_seeded(plan: &Plan, layers: Layers, seeds: [u64; Layer::COUNT]) -> Pattern {
+    let stream = |layer: Layer| Rng::new(seeds[layer.index()]).fork(layer.index() as u64 + 1);
     let voicings = chord_voicings(plan);
     let mut notes = Vec::new();
 
     if layers.chords {
-        chords(plan, &voicings, &mut rng.fork(1), &mut notes);
+        let mut rng = stream(Layer::Chords);
+        let varied = chord_voicings_varied(plan, &mut rng);
+        chords(plan, &varied, &mut rng, &mut notes);
     }
     if layers.bass {
-        bass(plan, &mut rng.fork(2), &mut notes);
+        bass(plan, &mut stream(Layer::Bass), &mut notes);
     }
     if layers.arp {
-        arp(plan, &voicings, &mut rng.fork(3), &mut notes);
+        arp(plan, &voicings, &mut stream(Layer::Arp), &mut notes);
     }
     if layers.melody {
-        melody(plan, &mut rng.fork(4), &mut notes);
+        melody(plan, &mut stream(Layer::Melody), &mut notes);
     }
     if layers.drums {
-        drums(plan, &mut rng.fork(5), &mut notes);
+        drums(plan, &mut stream(Layer::Drums), &mut notes);
     }
 
     notes.sort_by(|a, b| a.start.total_cmp(&b.start).then(a.pitch.cmp(&b.pitch)));
@@ -160,6 +169,29 @@ pub fn generate(plan: &Plan, layers: Layers, seed: u64) -> Pattern {
         .map(|i| (plan.chord_span(i).0, plan.progression[i].name(&plan.key)))
         .collect();
     Pattern { length_beats: plan.length_beats(), notes, chords }
+}
+
+/// The chord part's own voicing for this idea: a register and, sometimes, an open "drop 2"
+/// spread, so a new idea sounds new even when the progression is locked.
+fn chord_voicings_varied(plan: &Plan, rng: &mut Rng) -> Vec<Vec<i32>> {
+    let center = 62 + rng.range(-4, 4);
+    let drop2 = rng.chance(0.3);
+    let mut prev: Option<Vec<i32>> = None;
+    plan.progression
+        .iter()
+        .map(|c| {
+            let mut v = voicing::lead(&c.pitch_classes(&plan.key), prev.as_deref(), center, 52, 77);
+            prev = Some(v.clone());
+            if drop2 && v.len() >= 4 {
+                let i = v.len() - 2;
+                if v[i] - 12 >= 45 {
+                    v[i] -= 12;
+                    v.sort_unstable();
+                }
+            }
+            v
+        })
+        .collect()
 }
 
 fn chord_voicings(plan: &Plan) -> Vec<Vec<i32>> {
@@ -579,6 +611,49 @@ mod tests {
     }
 
     const MIDI_DRUM_CHANNEL: u8 = 9;
+
+    #[test]
+    fn locked_part_keeps_its_idea() {
+        let style = crate::style::find("deep-house").unwrap();
+        let root = PitchClass::parse("D").unwrap();
+        let only = |l: Layer| Layers { chords: l == Layer::Chords, bass: l == Layer::Bass, arp: false, melody: l == Layer::Melody, drums: l == Layer::Drums };
+        let (old, new) = (11u64, 12u64);
+
+        // Harmony and the part both locked: identical notes, whatever the other seeds do.
+        let plan = style.plan(root, 4, 0.6, old);
+        for l in [Layer::Bass, Layer::Melody, Layer::Drums, Layer::Chords] {
+            let mut seeds = [new; Layer::COUNT];
+            seeds[l.index()] = old;
+            assert_eq!(generate_seeded(&plan, only(l), seeds).notes, generate(&plan, only(l), old).notes, "{l:?}");
+        }
+
+        // Only the melody locked, new harmony: same rhythm, pitches follow the new chords.
+        let (a, b) = (style.plan(root, 4, 0.6, 3), style.plan(root, 4, 0.6, 4));
+        assert_ne!(a.chord_names(), b.chord_names());
+        let ma = generate_seeded(&a, only(Layer::Melody), [7; Layer::COUNT]);
+        let mb = generate_seeded(&b, only(Layer::Melody), [7; Layer::COUNT]);
+        let starts = |p: &Pattern| p.notes.iter().map(|n| n.start).collect::<Vec<_>>();
+        assert_eq!(starts(&ma), starts(&mb));
+
+        // Drums don't depend on harmony at all.
+        let da = generate_seeded(&a, only(Layer::Drums), [7; Layer::COUNT]);
+        let db = generate_seeded(&b, only(Layer::Drums), [7; Layer::COUNT]);
+        assert_eq!(da.notes, db.notes);
+    }
+
+    #[test]
+    fn new_ideas_revoice_the_chords() {
+        let plan = STYLES[0].plan(PitchClass::parse("C").unwrap(), 4, 0.5, 1);
+        let only_chords = Layers { chords: true, ..Layers::none() };
+        let voicings: std::collections::HashSet<Vec<u8>> = (0..20u64)
+            .map(|s| {
+                let mut seeds = [1; Layer::COUNT];
+                seeds[0] = s;
+                generate_seeded(&plan, only_chords, seeds).notes.iter().map(|n| n.pitch).collect()
+            })
+            .collect();
+        assert!(voicings.len() >= 4, "{} distinct voicings", voicings.len());
+    }
 
     #[test]
     fn deterministic() {

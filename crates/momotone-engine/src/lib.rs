@@ -22,7 +22,7 @@ pub mod style;
 pub mod voicing;
 
 pub use chord::Chord;
-pub use generate::{generate, Layer, Layers, Note, Pattern};
+pub use generate::{generate, generate_seeded, Layer, Layers, Note, Pattern};
 pub use pitch::PitchClass;
 pub use plan::Plan;
 pub use scale::{Mode, Scale};

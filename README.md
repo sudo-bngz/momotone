@@ -34,6 +34,15 @@ A fifth part, **Drums**, plays kick, snare or clap, closed hat, open hat and one
 - Switch it on with the **Drums** part (off by default), and send it like any part: through the DAW, to a follower set to *Plays: Drums*, or straight to your drum machine with **OUT**.
 - Drums ignore octave shifts (each note is an instrument), and the export writes `5 Drums.mid`.
 
+## Locks: keep what you like, change the rest
+
+Click the **padlock** next to a part to keep it while you browse ideas: *New idea*, ◀ ▶ and the Idea knob then change only the unlocked parts.
+
+- **A locked part keeps its idea**: its groove, melody motif, arp order, bass approach notes, drum fills, chord voicing. If the harmony isn't locked, it follows the new chords (a locked bass keeps its line and moves to the new roots, so it never clashes).
+- **The padlock next to CHORDS locks the harmony**: the progression stays and new ideas change the parts around it. New ideas still re-voice the chords (register, open voicing), so "same harmony, new chords" sounds different.
+- **Lock the bass and the harmony** to keep the bass exactly as it is, note for note, while everything else changes.
+- The counter under *New idea* shows how many things are locked; **Unlock** frees them all. Locks are saved with your Live set, and followers play the main's locked parts too.
+
 ## The screen
 
 ![Momotone](docs/momotone-ui.png)
@@ -179,7 +188,8 @@ UK garage bass     "0..3..1.....2.4.0..3..1...5.2..7"   (2 bars)
 - [x] Custom UI: style buttons, energy fader, chord strip, "New idea", piano-roll preview, MIDI export
 - [ ] Drag a part from the plugin straight onto a DAW track (native OS drag, macOS first)
 - [ ] AI prompt box (LLM call from a background thread)
-- [ ] Lock a part or a bar you like and regenerate the rest
+- [x] Lock a part (or the harmony) and regenerate the rest
+- [ ] Locks on the Push (buttons)
 - [x] Direct hardware MIDI out per part (port, channel, latency offset)
 - [ ] Velocity curves, humanize
 - [x] Drum part (kick/snare/hats/perc per style and energy, GM notes on ch 10)

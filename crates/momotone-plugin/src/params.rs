@@ -59,6 +59,10 @@ pub struct MomotoneParams {
     #[persist = "editor-size-v5"]
     pub editor_state: Arc<EguiState>,
 
+    /// Locked parts and harmony, saved with the project.
+    #[persist = "locks"]
+    pub locks: Arc<RwLock<crate::Locks>>,
+
     /// Direct hardware outputs (port, channel, offset per part), saved with the project.
     #[persist = "hw-out"]
     pub hw: Arc<RwLock<crate::hwout::HwConfig>>,
@@ -119,6 +123,7 @@ impl Default for MomotoneParams {
         Self {
             editor_state: EguiState::from_size(crate::editor::WIDTH, crate::editor::HEIGHT),
             hw: Arc::new(RwLock::new(crate::hwout::HwConfig::default())),
+            locks: Arc::new(RwLock::new(crate::Locks::default())),
             role: EnumParam::new("Role", RoleChoice::Main),
             group: IntParam::new("Link Group", 1, IntRange::Linear { min: 1, max: crate::link::GROUPS as i32 }),
             part: EnumParam::new("Plays", PartChoice::Bass),
