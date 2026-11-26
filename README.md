@@ -62,6 +62,29 @@ Optional, and out of the way until you want it: click **AI** at the top right, t
 
 The `ANTHROPIC_API_KEY` environment variable overrides the file. The default model is `claude-haiku-5-5` (fast and cheap: a prompt costs a fraction of a cent); set `"model"` in the file to use another one. Nothing is sent except the text you type and Momotone's instructions.
 
+## Song mode: from a loop to a track
+
+The **Section** menu (next to Bars, and on the Push) writes the same idea for each part of a track. Key, chords and every part's idea stay the same, so all sections belong together; what changes is which parts play, the energy and the drums.
+
+| Section | What plays |
+|---|---|
+| **Loop** | the idea as it is (default) |
+| **Intro** | kick, hats and the chords at low energy. No bass, no melody: room for the DJ to mix in |
+| **Groove** | the bass comes in, full drums, the arp. The melody waits |
+| **Build** | everything rises; the last bar cuts the kick under a snare roll, and the bass drops out for the last two beats |
+| **Drop** | every part, energy up, a crash on the one |
+| **Break** | no kick, no bass: chords and melody float over the hats. Ride your delays and filters |
+| **Outro** | kick, hats, percussion and bass. Chords and melody gone: room to mix out |
+| **Song** | all of them in a row: intro 16 · groove 16 · build 8 · drop 32 · break 16 · build 8 · drop 32 · outro 16 bars (144 bars, about 4:40 at 124 bpm) |
+
+![Song mode](docs/momotone-song.png)
+
+- **Session view / Push:** switch Section like any setting: it changes on the next bar line. Put it on the Push (bank 1, encoder 5) and play the track live: intro, groove, build, drop... Record that into the Arrangement.
+- **Arrangement:** choose **Song** and press play from bar 1. Momotone follows Live's timeline: bar 33 is the build wherever you start. The strip above the parts shows the sections and the one playing.
+- **Export midi song** writes the whole track, one `.mid` per part, ready to drag into the Arrangement.
+- Followers and hardware outputs play the same section, so your machines play the whole track while you record them.
+- Sections only take parts away: a part you switched off stays off. Locks still work, and in Song mode New idea changes the whole track.
+
 ## The screen
 
 ![Momotone](docs/momotone-ui.png)
@@ -84,9 +107,9 @@ The parameters are ordered for Ableton's Push, which shows a device 8 at a time.
 
 | Push bank | Encoders 1–8 |
 |---|---|
-| **1 · play** | Style · Key · Energy · Idea · Bars · Chords · Bass · Melody |
-| **2 · setup** | Arp · Drums · Chords Oct · Bass Oct · Arp Oct · Melody Oct · Split Ch · Role |
-| **3** | Link Group · Plays |
+| **1 · play** | Style · Key · Energy · Idea · Section · Chords · Bass · Melody |
+| **2 · setup** | Arp · Drums · Chords Oct · Bass Oct · Arp Oct · Melody Oct · Bars · Split Ch |
+| **3** | Role · Link Group · Plays |
 
 | Parameter | What it does |
 |---|---|
@@ -94,6 +117,7 @@ The parameters are ordered for Ableton's Push, which shows a device 8 at a time.
 | Key | Root note. The style picks the scale |
 | Energy | 0 % sparse and laid back → 100 % busy and peak-time. Only adds or removes ghost notes and fills; the core groove never moves |
 | Idea | #1..#500. Each number is a different loop in the style. Saved with your project, so you can always get it back |
+| Section | Loop, Intro, Groove, Build, Drop, Break, Outro, or Song (see Song mode) |
 | Bars | Loop length, 1..8 |
 | Chords / Bass / Arp / Melody / Drums | Turn parts on or off. Muting one never changes the others. Drums are off by default |
 | *Part* Oct | Shift each part ±3 octaves to fit each machine's range |
@@ -180,6 +204,7 @@ crates/momotone-engine   pure Rust, no audio deps (CLI, tests, WASM later)
   grid                   groove grids with energy thresholds (see below)
   style                  the genres: mode, proven progressions, swing, one grid per part
   generate               chords / bass / arp / melody, deterministic per seed
+  song                   sections (intro ... outro) and the whole song from one idea
   explain                "why this works" lines
   spec                   JSON contract for the AI layer + its system prompt
   midi                   Standard MIDI File writer
@@ -215,6 +240,8 @@ UK garage bass     "0..3..1.....2.4.0..3..1...5.2..7"   (2 bars)
 - [x] Drum part (kick/snare/hats/perc per style and energy, GM notes on ch 10)
 - [ ] Custom drum note map per machine
 - [ ] Follow mode: play a note on the Push to set the key live
+- [x] Song mode: sections (intro, groove, build, drop, break, outro) and a whole track following the arrangement
+- [ ] Edit the song layout (section order and lengths)
 
 ## License
 

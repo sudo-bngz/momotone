@@ -10,6 +10,43 @@ pub enum RoleChoice {
     Follower,
 }
 
+/// Loop: the idea as it is. A section: the same idea written for that part of a track.
+/// Song: every section in a row, following the DAW's timeline from bar 1.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SectionChoice {
+    Loop,
+    Intro,
+    Groove,
+    Build,
+    Drop,
+    Break,
+    Outro,
+    Song,
+}
+
+impl SectionChoice {
+    pub const ALL: [SectionChoice; 8] = [
+        SectionChoice::Loop,
+        SectionChoice::Intro,
+        SectionChoice::Groove,
+        SectionChoice::Build,
+        SectionChoice::Drop,
+        SectionChoice::Break,
+        SectionChoice::Outro,
+        SectionChoice::Song,
+    ];
+
+    pub fn from_index(i: u8) -> SectionChoice {
+        Self::ALL[(i as usize).min(Self::ALL.len() - 1)]
+    }
+
+    /// The engine's section, for the six sections.
+    pub fn section(self) -> Option<momotone_engine::Section> {
+        let i = self as usize;
+        (1..=6).contains(&i).then(|| momotone_engine::Section::ALL[i - 1])
+    }
+}
+
 /// Must stay in the same order as `momotone_engine::Layer::ALL`.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PartChoice {
@@ -83,8 +120,9 @@ pub struct MomotoneParams {
     /// The idea number: each one is a different loop in the same style. Saved with the project.
     #[id = "variation"]
     pub variation: IntParam,
-    #[id = "bars"]
-    pub bars: IntParam,
+    /// Loop, a section of a track (intro, groove, build, drop, break, outro), or the song.
+    #[id = "section"]
+    pub section: EnumParam<SectionChoice>,
     #[id = "chords"]
     pub chords: BoolParam,
     #[id = "bass"]
@@ -108,12 +146,14 @@ pub struct MomotoneParams {
     #[id = "oct_melody"]
     pub oct_melody: IntParam,
     /// On: chords ch1, bass ch2, arp ch3, melody ch4. Off: everything on channel 1.
+    #[id = "bars"]
+    pub bars: IntParam,
     #[id = "split"]
     pub split_channels: BoolParam,
-    #[id = "role"]
-    pub role: EnumParam<RoleChoice>,
 
     // ---- Push bank 3
+    #[id = "role"]
+    pub role: EnumParam<RoleChoice>,
     /// Link group 1..4: a follower follows the main of the same group.
     #[id = "group"]
     pub group: IntParam,
@@ -129,6 +169,7 @@ impl Default for MomotoneParams {
             hw: Arc::new(RwLock::new(crate::hwout::HwConfig::default())),
             locks: Arc::new(RwLock::new(crate::Locks::default())),
             ai: Arc::new(RwLock::new(None)),
+            section: EnumParam::new("Section", SectionChoice::Loop),
             role: EnumParam::new("Role", RoleChoice::Main),
             group: IntParam::new("Link Group", 1, IntRange::Linear { min: 1, max: crate::link::GROUPS as i32 }),
             part: EnumParam::new("Plays", PartChoice::Bass),
@@ -171,9 +212,9 @@ mod tests {
     fn push_banks() {
         let p = MomotoneParams::default();
         let ids: Vec<String> = p.param_map().into_iter().map(|(id, _, _)| id).collect();
-        assert_eq!(ids[..8], ["style", "key", "energy", "variation", "bars", "chords", "bass", "melody"]);
-        assert_eq!(ids[8..16], ["arp", "drums", "oct_chords", "oct_bass", "oct_arp", "oct_melody", "split", "role"]);
-        assert_eq!(ids[16..], ["group", "part"]);
+        assert_eq!(ids[..8], ["style", "key", "energy", "variation", "section", "chords", "bass", "melody"]);
+        assert_eq!(ids[8..16], ["arp", "drums", "oct_chords", "oct_bass", "oct_arp", "oct_melody", "bars", "split"]);
+        assert_eq!(ids[16..], ["role", "group", "part"]);
     }
 
     #[test]
