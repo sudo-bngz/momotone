@@ -40,23 +40,31 @@ No DAW at hand? `cargo run --release -p momotone-plugin --features standalone` o
 
 Fonts: [Audiowide](https://fonts.google.com/specimen/Audiowide) and [Share Tech Mono](https://fonts.google.com/specimen/Share+Tech+Mono), both under the SIL Open Font License (`crates/momotone-plugin/assets/fonts/`).
 
-## Parameters
+## Parameters (and Push banks)
+
+The parameters are ordered for Ableton's Push, which shows a device 8 at a time. Select the Momotone track and the encoders control bank 1 straight away. Names are short enough for the Push display.
+
+| Push bank | Encoders 1–8 |
+|---|---|
+| **1 · play** | Style · Key · Energy · Idea · Bars · Chords · Bass · Melody |
+| **2 · setup** | Arp · Chords Oct · Bass Oct · Arp Oct · Melody Oct · Split Ch · Role · Link Group |
+| **3** | Plays |
 
 | Parameter | What it does |
 |---|---|
-| Role | **Main** (you play it) or **Follower** (plays one part of its group's main) |
-| Link group | 1..4: a follower follows the main of the same group |
-| Follower part | The part a follower plays: Chords, Bass, Arp or Melody |
-| Style | One of the 36 styles above: harmony, grooves and swing (shown by name in the DAW) |
+| Style | One of the 36 styles above: harmony, grooves and swing (shown by name) |
 | Key | Root note. The style picks the scale |
-| Energy | 0 % sparse and laid back → 100 % busy and peak-time. It only adds or removes ghost notes and fills; the core groove never moves |
-| Variation | 1..500. Each number is a different idea. Saved with your project, so you can always get it back |
+| Energy | 0 % sparse and laid back → 100 % busy and peak-time. Only adds or removes ghost notes and fills; the core groove never moves |
+| Idea | #1..#500. Each number is a different loop in the style. Saved with your project, so you can always get it back |
 | Bars | Loop length, 1..8 |
 | Chords / Bass / Arp / Melody | Turn parts on or off. Muting one never changes the others |
-| *Part* octave | Shift each part ±3 octaves to fit each machine's range |
-| One channel per part | On (default): chords ch 1, bass ch 2, arp ch 3, melody ch 4. Off: everything on ch 1. Useful in hosts that can split channels (Bitwig, Reaper); in Live, use followers |
+| *Part* Oct | Shift each part ±3 octaves to fit each machine's range |
+| Split Ch | On (default): chords ch 1, bass ch 2, arp ch 3, melody ch 4. Off: everything on ch 1. Useful in hosts that can split channels (Bitwig, Reaper); in Live, use followers |
+| Role | **Main** (you play it) or **Follower** (plays one part of its group's main) |
+| Link Group | 1..4: a follower follows the main of the same group |
+| Plays | The part a follower plays: Chords, Bass, Arp or Melody |
 
-New settings come in on the next bar line, like launching a clip, so you can tweak while it plays.
+New settings come in on the next bar line, like launching a clip, so you can turn encoders while it plays.
 
 ## Studio workflow (Ableton Live + Push + hardware)
 
