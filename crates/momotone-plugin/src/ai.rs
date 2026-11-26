@@ -153,7 +153,11 @@ pub fn load_config() -> AiConfig {
 
 /// Saves the key in the config file, readable by this user only.
 pub fn save_api_key(key: &str) -> std::io::Result<PathBuf> {
-    let path = config_path();
+    save_api_key_to(config_path(), key)
+}
+
+/// Writes the key into the config file at `path`, keeping its other settings.
+fn save_api_key_to(path: PathBuf, key: &str) -> std::io::Result<PathBuf> {
     let mut cfg: AiConfig = std::fs::read_to_string(&path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -178,12 +182,17 @@ pub fn save_api_key(key: &str) -> std::io::Result<PathBuf> {
 
 /// Asks Claude for a pattern spec. Blocking: call it off the GUI and audio threads.
 pub fn ask(cfg: &AiConfig, prompt: &str) -> Result<PatternSpec, String> {
+    let base = std::env::var("MOMOTONE_API_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
+    ask_at(&base, cfg, prompt)
+}
+
+/// [`ask`] against the API at `base` (tests point this at a local mock server).
+fn ask_at(base: &str, cfg: &AiConfig, prompt: &str) -> Result<PatternSpec, String> {
     let key = cfg
         .api_key
         .as_deref()
         .filter(|k| !k.is_empty())
         .ok_or("no API key")?;
-    let base = std::env::var("MOMOTONE_API_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
     let body = serde_json::json!({
         "model": cfg.model.as_deref().unwrap_or(DEFAULT_MODEL),
         "max_tokens": 4096,
@@ -318,22 +327,16 @@ mod tests {
         .to_string()
     }
 
-    // Both API tests use MOMOTONE_API_URL, so they run one at a time.
-    static SERIAL: Mutex<()> = Mutex::new(());
-
     #[test]
     fn asks_claude_and_reads_the_spec() {
-        let _g = SERIAL.lock().unwrap();
         let answer = "Here you go:\n```json\n{\"key\":\"F\",\"mode\":\"minor\",\"progression\":[\"i9\",\"i9\",\"bVImaj7\",\"bVImaj7\"],\"bars\":4,\"style\":\"dub-techno\",\"energy\":0.35,\"tempo\":118,\"explanation\":\"One deep chord, lots of space.\"}\n```";
         let (url, server) = mock(200, reply_with(answer));
-        std::env::set_var("MOMOTONE_API_URL", &url);
         let cfg = AiConfig {
             api_key: Some("sk-test".into()),
             ..Default::default()
         };
-        let spec = ask(&cfg, "dark rolling dub techno, a bit hypnotic").unwrap();
+        let spec = ask_at(&url, &cfg, "dark rolling dub techno, a bit hypnotic").unwrap();
         let request = server.join().unwrap().to_ascii_lowercase();
-        std::env::remove_var("MOMOTONE_API_URL");
 
         assert!(request.starts_with("post /v1/messages "), "{request}");
         assert!(request.contains("authorization: bearer sk-test"));
@@ -363,11 +366,10 @@ mod tests {
 
     #[test]
     fn reports_api_errors() {
-        let _g = SERIAL.lock().unwrap();
         let body = r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#.to_string();
         let (url, server) = mock(401, body);
-        std::env::set_var("MOMOTONE_API_URL", &url);
-        let err = ask(
+        let err = ask_at(
+            &url,
             &AiConfig {
                 api_key: Some("bad".into()),
                 ..Default::default()
@@ -376,7 +378,6 @@ mod tests {
         )
         .unwrap_err();
         server.join().unwrap();
-        std::env::remove_var("MOMOTONE_API_URL");
         assert!(
             err.contains("401") && err.contains("invalid x-api-key"),
             "{err}"
@@ -424,11 +425,9 @@ mod tests {
 
     #[test]
     fn key_file_is_private() {
-        let _g = SERIAL.lock().unwrap();
+        // No HOME juggling: tests run in parallel and share the environment.
         let tmp = std::env::temp_dir().join(format!("momotone-ai-{}", std::process::id()));
-        let old = std::env::var_os("HOME");
-        std::env::set_var("HOME", &tmp);
-        let path = save_api_key("  sk-ant-123  ").unwrap();
+        let path = save_api_key_to(tmp.join("Momotone").join("config.json"), "  sk-ant-123  ").unwrap();
         let cfg: AiConfig = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(cfg.api_key.as_deref(), Some("sk-ant-123"));
         #[cfg(unix)]
@@ -438,9 +437,6 @@ mod tests {
                 std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
                 0o600
             );
-        }
-        if let Some(h) = old {
-            std::env::set_var("HOME", h);
         }
         std::fs::remove_dir_all(tmp).ok();
     }
