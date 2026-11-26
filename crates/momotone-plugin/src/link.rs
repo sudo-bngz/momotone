@@ -73,6 +73,7 @@ pub fn part_layers(part: Layer) -> Layers {
         Layer::Bass => l.bass = true,
         Layer::Arp => l.arp = true,
         Layer::Melody => l.melody = true,
+        Layer::Drums => l.drums = true,
     }
     l
 }
@@ -98,7 +99,7 @@ mod tests {
     use super::*;
 
     fn block(beat: f64, samples: usize) -> Block {
-        Block { start_beat: beat, beats_per_sample: 124.0 / 60.0 / 48_000.0, samples, octaves: [0; 4], split_channels: true, mask: [true; 4], channel: None }
+        Block { start_beat: beat, beats_per_sample: 124.0 / 60.0 / 48_000.0, samples, octaves: [0; 5], split_channels: true, mask: [true; 5], channel: None }
     }
 
     #[test]

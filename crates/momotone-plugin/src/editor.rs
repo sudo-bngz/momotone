@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const WIDTH: u32 = 1000;
-pub const HEIGHT: u32 = 560;
+pub const HEIGHT: u32 = 610;
 
 const BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
 const PANEL: Color32 = Color32::from_rgb(0x07, 0x07, 0x07);
@@ -48,6 +48,7 @@ fn part_color(layer: Layer) -> Color32 {
         Layer::Bass => PINK,
         Layer::Arp => CYAN,
         Layer::Melody => MINT,
+        Layer::Drums => TEXT,
     }
 }
 
@@ -171,13 +172,19 @@ fn set<P: Param>(setter: &ParamSetter, p: &P, v: P::Plain) {
     setter.end_set_parameter(p);
 }
 
-fn part_params(params: &MomotoneParams, layer: Layer) -> (&BoolParam, &IntParam) {
+/// A part's on/off switch and octave (drums have none: each note is an instrument).
+fn part_params(params: &MomotoneParams, layer: Layer) -> (&BoolParam, Option<&IntParam>) {
     match layer {
-        Layer::Chords => (&params.chords, &params.oct_chords),
-        Layer::Bass => (&params.bass, &params.oct_bass),
-        Layer::Arp => (&params.arp, &params.oct_arp),
-        Layer::Melody => (&params.melody, &params.oct_melody),
+        Layer::Chords => (&params.chords, Some(&params.oct_chords)),
+        Layer::Bass => (&params.bass, Some(&params.oct_bass)),
+        Layer::Arp => (&params.arp, Some(&params.oct_arp)),
+        Layer::Melody => (&params.melody, Some(&params.oct_melody)),
+        Layer::Drums => (&params.drums, None),
     }
+}
+
+fn octaves(params: &MomotoneParams) -> [i32; Layer::COUNT] {
+    [params.oct_chords.value(), params.oct_bass.value(), params.oct_arp.value(), params.oct_melody.value(), 0]
 }
 
 fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params: &MomotoneParams, shared: &UiShared, hw: &HwState) {
@@ -533,9 +540,9 @@ fn main_body(
         ui.label(caps("parts", 11.0, DIM));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let split = params.split_channels.value();
-            let text = if split { "out: ch 1-4, one per part" } else { "out: all parts on ch 1" };
+            let text = if split { "out: one channel per part (drums ch 10)" } else { "out: all parts on ch 1" };
             if btn(ui, text, false, MINT, 0.0)
-                .on_hover_text("One MIDI channel per part (chords 1, bass 2, arp 3, melody 4), or everything on channel 1")
+                .on_hover_text("One MIDI channel per part (chords 1, bass 2, arp 3, melody 4, drums 10), or everything on channel 1")
                 .clicked()
             {
                 set(setter, &params.split_channels, !split);
@@ -678,11 +685,19 @@ fn part_lane(
             }
             hardware_out(ui, params, i, &out, ports, problem.as_deref());
             // Octave: a small bipolar knob.
-            let (kr, kresp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click_and_drag());
-            knob_core(ui, setter, octave, kr, &kresp, true);
-            kresp.on_hover_cursor(CursorIcon::ResizeVertical).on_hover_text("Octave (drag, double-click = 0)");
-            let o = octave.value();
-            ui.label(caps(&format!("{o:+}"), 11.0, if o == 0 { DIM } else { TEXT }));
+            if let Some(octave) = octave {
+                let (kr, kresp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click_and_drag());
+                knob_core(ui, setter, octave, kr, &kresp, true);
+                kresp.on_hover_cursor(CursorIcon::ResizeVertical).on_hover_text("Octave (drag, double-click = 0)");
+                let o = octave.value();
+                let (r, _) = ui.allocate_exact_size(vec2(20.0, 24.0), Sense::hover());
+                ui.painter().text(r.left_center(), Align2::LEFT_CENTER, format!("{o:+}"), mono(11.0), if o == 0 { DIM } else { TEXT });
+            } else {
+                // Same width as the octave knob and its value, so every lane lines up.
+                let (r, resp) = ui.allocate_exact_size(vec2(28.0 + 6.0 + 20.0, 24.0), Sense::hover());
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, "GM", mono(11.0), FAINT);
+                resp.on_hover_text("General MIDI drum notes: 36 kick, 38 snare, 39 clap, 37 rim, 42/46 hats");
+            }
         });
 
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), LANE_H), Sense::hover());
@@ -698,12 +713,23 @@ fn part_lane(
         }
 
         let notes: Vec<_> = pattern.notes.iter().filter(|n| n.layer == layer).collect();
-        if let (Some(lo), Some(hi)) = (notes.iter().map(|n| n.pitch).min(), notes.iter().map(|n| n.pitch).max()) {
-            let range = (hi - lo) as f32 + 1.0;
+        // Drums: one row per instrument, in pitch order; other parts: by pitch.
+        let mut rows: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
+        rows.sort_unstable();
+        rows.dedup();
+        let row_of = |p: u8| -> f32 {
+            if layer == Layer::Drums {
+                rows.iter().position(|r| *r == p).unwrap_or(0) as f32
+            } else {
+                (p - rows[0]) as f32
+            }
+        };
+        if let (Some(&lo), Some(&hi)) = (rows.first(), rows.last()) {
+            let range = if layer == Layer::Drums { rows.len() as f32 } else { (hi - lo) as f32 + 1.0 };
             let h = ((rect.height() - 8.0) / range).clamp(2.0, 6.0);
             let fill = if on { color } else { color.gamma_multiply(0.18) };
             for n in notes {
-                let y = rect.bottom() - 4.0 - ((n.pitch - lo) as f32 + 0.5) / range * (rect.height() - 8.0);
+                let y = rect.bottom() - 4.0 - (row_of(n.pitch) + 0.5) / range * (rect.height() - 8.0);
                 let r = Rect::from_min_max(
                     Pos2::new(x_at(n.start) + 1.0, y - h / 2.0),
                     Pos2::new((x_at(n.start + n.length) - 1.0).max(x_at(n.start) + 3.0), y + h / 2.0),
@@ -778,7 +804,7 @@ fn hardware_out(ui: &mut Ui, params: &MomotoneParams, i: usize, out: &hwout::Par
             edit(&|p| p.offset_ms = ms);
         }
     } else {
-        let channel = if params.split_channels.value() { i + 1 } else { 1 };
+        let channel = if params.split_channels.value() { Layer::ALL[i].channel() + 1 } else { 1 };
         let (r, _) = ui.allocate_exact_size(vec2(114.0, 24.0), Sense::hover());
         ui.painter().text(r.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, format!("CH{channel}"), mono(11.0), FAINT);
     }
@@ -797,7 +823,7 @@ fn footer(
     ui.horizontal(|ui| {
         let hint = "Saves each part as its own .mid, ready to drag onto your machine tracks";
         if btn(ui, "export midi loop", false, MINT, 150.0).on_hover_text(hint).clicked() {
-            let octaves = [params.oct_chords.value(), params.oct_bass.value(), params.oct_arp.value(), params.oct_melody.value()];
+            let octaves = octaves(params);
             let tempo = shared.tempo().unwrap_or(plan.tempo);
             data.status = Some(match export(plan, pattern, settings, octaves, tempo) {
                 Ok(dir) => {
@@ -846,7 +872,7 @@ fn clean(name: &str) -> String {
 }
 
 /// Writes one folder per idea: one .mid per enabled part plus "All parts.mid".
-fn export(plan: &Plan, pattern: &Pattern, s: &GenSettings, octaves: [i32; 4], tempo: f64) -> std::io::Result<PathBuf> {
+fn export(plan: &Plan, pattern: &Pattern, s: &GenSettings, octaves: [i32; Layer::COUNT], tempo: f64) -> std::io::Result<PathBuf> {
     let key = plan.key.root.name(plan.key.prefers_flats());
     let name = clean(&format!(
         "{} - {} {} - {:.0} bpm - energy {} - idea {}",
@@ -872,7 +898,7 @@ fn export(plan: &Plan, pattern: &Pattern, s: &GenSettings, octaves: [i32; 4], te
     };
     std::fs::write(dir.join("All parts.mid"), midi::to_smf(&selected, tempo))?;
     for layer in parts {
-        let file = format!("{} {}.mid", layer.channel() + 1, layer.name());
+        let file = format!("{} {}.mid", layer.index() + 1, layer.name());
         std::fs::write(dir.join(file), midi::to_smf(&shifted.only(layer), tempo))?;
     }
     Ok(dir)
@@ -900,10 +926,10 @@ mod tests {
         let s = GenSettings { style: dub, key: 9, bars: 4, seed: 3, energy: 60, layers: Layers { arp: false, ..Layers::all() } };
         let plan = plan_for(&s);
         let pattern = generate(&plan, Layers::all(), s.seed);
-        let dir = export(&plan, &pattern, &s, [0, -1, 0, 1], 72.0).unwrap();
+        let dir = export(&plan, &pattern, &s, [0, -1, 0, 1, 0], 72.0).unwrap();
         let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         files.sort();
-        assert_eq!(files, ["1 Chords.mid", "2 Bass.mid", "4 Melody.mid", "All parts.mid"]);
+        assert_eq!(files, ["1 Chords.mid", "2 Bass.mid", "4 Melody.mid", "5 Drums.mid", "All parts.mid"]);
         assert!(dir.to_string_lossy().contains("Dub - Reggae - A minor - 72 bpm - energy 60 - idea 3"));
         std::fs::remove_dir_all(tmp).ok();
     }

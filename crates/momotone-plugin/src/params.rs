@@ -17,6 +17,7 @@ pub enum PartChoice {
     Bass,
     Arp,
     Melody,
+    Drums,
 }
 
 impl PartChoice {
@@ -55,7 +56,7 @@ fn octave(name: &str) -> IntParam {
 #[derive(Params)]
 pub struct MomotoneParams {
     /// Window size, saved with the project.
-    #[persist = "editor-size-v4"]
+    #[persist = "editor-size-v5"]
     pub editor_state: Arc<EguiState>,
 
     /// Direct hardware outputs (port, channel, offset per part), saved with the project.
@@ -86,6 +87,9 @@ pub struct MomotoneParams {
     // ---- Push bank 2: parts and routing
     #[id = "arp"]
     pub arp: BoolParam,
+    /// Drums on channel 10 (General MIDI drum map).
+    #[id = "drums"]
+    pub drums: BoolParam,
     /// Per-part octave shift, to fit each machine's sweet spot.
     #[id = "oct_chords"]
     pub oct_chords: IntParam,
@@ -100,11 +104,11 @@ pub struct MomotoneParams {
     pub split_channels: BoolParam,
     #[id = "role"]
     pub role: EnumParam<RoleChoice>,
+
+    // ---- Push bank 3
     /// Link group 1..4: a follower follows the main of the same group.
     #[id = "group"]
     pub group: IntParam,
-
-    // ---- Push bank 3
     /// The part a follower plays.
     #[id = "part"]
     pub part: EnumParam<PartChoice>,
@@ -136,6 +140,7 @@ impl Default for MomotoneParams {
             chords: BoolParam::new("Chords", true),
             bass: BoolParam::new("Bass", true),
             arp: BoolParam::new("Arp", false),
+            drums: BoolParam::new("Drums", false),
             melody: BoolParam::new("Melody", true),
             oct_chords: octave("Chords Oct"),
             oct_bass: octave("Bass Oct"),
@@ -156,8 +161,8 @@ mod tests {
         let p = MomotoneParams::default();
         let ids: Vec<String> = p.param_map().into_iter().map(|(id, _, _)| id).collect();
         assert_eq!(ids[..8], ["style", "key", "energy", "variation", "bars", "chords", "bass", "melody"]);
-        assert_eq!(ids[8..16], ["arp", "oct_chords", "oct_bass", "oct_arp", "oct_melody", "split", "role", "group"]);
-        assert_eq!(ids[16..], ["part"]);
+        assert_eq!(ids[8..16], ["arp", "drums", "oct_chords", "oct_bass", "oct_arp", "oct_melody", "split", "role"]);
+        assert_eq!(ids[16..], ["group", "part"]);
     }
 
     #[test]

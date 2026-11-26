@@ -25,6 +25,15 @@ VST3 + CLAP, written in Rust with [nih-plug](https://github.com/robbert-vdh/nih-
 
 The plugin follows your project tempo; each style's typical tempo (shown in the style menu) is what the `.mid` export uses when there's no host tempo. `momotone styles` lists them all.
 
+## Drums
+
+A fifth part, **Drums**, plays kick, snare or clap, closed hat, open hat and one percussion voice, with a pattern for each of the 36 styles: four-on-the-floor and off-beat hats for house and techno, 2-step for garage, the one-drop for dub, two-step breaks for drum & bass, half-time for dubstep, boom-bap for lo-fi, and so on.
+
+- It follows **Energy** like the other parts: low keeps the core groove, higher adds ghost hats, open hats, percussion and claps. From 70 % a **snare fill** leads into the loop point on the last bar. Turning Energy up only ever adds hits.
+- It goes out on **MIDI channel 10**, with **General MIDI drum notes**: 36 kick, 38 snare, 39 clap, 37 rim, 42 closed hat, 46 open hat, plus a percussion note per style (70 shaker, 75 claves, 51 ride, 56 cowbell, 54 tambourine, 63/64 congas). Most drum machines map these by default, or can be set to.
+- Switch it on with the **Drums** part (off by default), and send it like any part: through the DAW, to a follower set to *Plays: Drums*, or straight to your drum machine with **OUT**.
+- Drums ignore octave shifts (each note is an instrument), and the export writes `5 Drums.mid`.
+
 ## The screen
 
 ![Momotone](docs/momotone-ui.png)
@@ -47,8 +56,8 @@ The parameters are ordered for Ableton's Push, which shows a device 8 at a time.
 | Push bank | Encoders 1–8 |
 |---|---|
 | **1 · play** | Style · Key · Energy · Idea · Bars · Chords · Bass · Melody |
-| **2 · setup** | Arp · Chords Oct · Bass Oct · Arp Oct · Melody Oct · Split Ch · Role · Link Group |
-| **3** | Plays |
+| **2 · setup** | Arp · Drums · Chords Oct · Bass Oct · Arp Oct · Melody Oct · Split Ch · Role |
+| **3** | Link Group · Plays |
 
 | Parameter | What it does |
 |---|---|
@@ -57,12 +66,12 @@ The parameters are ordered for Ableton's Push, which shows a device 8 at a time.
 | Energy | 0 % sparse and laid back → 100 % busy and peak-time. Only adds or removes ghost notes and fills; the core groove never moves |
 | Idea | #1..#500. Each number is a different loop in the style. Saved with your project, so you can always get it back |
 | Bars | Loop length, 1..8 |
-| Chords / Bass / Arp / Melody | Turn parts on or off. Muting one never changes the others |
+| Chords / Bass / Arp / Melody / Drums | Turn parts on or off. Muting one never changes the others. Drums are off by default |
 | *Part* Oct | Shift each part ±3 octaves to fit each machine's range |
-| Split Ch | On (default): chords ch 1, bass ch 2, arp ch 3, melody ch 4. Off: everything on ch 1. Useful in hosts that can split channels (Bitwig, Reaper); in Live, use followers |
+| Split Ch | On (default): chords ch 1, bass ch 2, arp ch 3, melody ch 4, drums ch 10. Off: everything on ch 1. Useful in hosts that can split channels (Bitwig, Reaper); in Live, use followers |
 | Role | **Main** (you play it) or **Follower** (plays one part of its group's main) |
 | Link Group | 1..4: a follower follows the main of the same group |
-| Plays | The part a follower plays: Chords, Bass, Arp or Melody |
+| Plays | The part a follower plays: Chords, Bass, Arp, Melody or Drums |
 
 New settings come in on the next bar line, like launching a clip, so you can turn encoders while it plays.
 
@@ -173,7 +182,8 @@ UK garage bass     "0..3..1.....2.4.0..3..1...5.2..7"   (2 bars)
 - [ ] Lock a part or a bar you like and regenerate the rest
 - [x] Direct hardware MIDI out per part (port, channel, latency offset)
 - [ ] Velocity curves, humanize
-- [ ] Drum part (kick/snare/hats grids per style) for drum machines
+- [x] Drum part (kick/snare/hats/perc per style and energy, GM notes on ch 10)
+- [ ] Custom drum note map per machine
 - [ ] Follow mode: play a note on the Push to set the key live
 
 ## License

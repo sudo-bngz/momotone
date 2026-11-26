@@ -18,7 +18,7 @@ use std::collections::{BinaryHeap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-pub const PARTS: usize = 4;
+pub const PARTS: usize = momotone_engine::Layer::COUNT;
 
 /// Where one part goes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -33,14 +33,26 @@ pub struct PartOut {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HwConfig {
+    /// Chords, bass, arp, melody, drums. Sets saved before a part existed load with that
+    /// part's defaults.
+    #[serde(deserialize_with = "parts_of_any_length")]
     pub parts: [PartOut; PARTS],
 }
 
 impl Default for HwConfig {
     fn default() -> Self {
         let part = |ch| PartOut { port: None, channel: ch, offset_ms: 0.0 };
-        HwConfig { parts: [part(1), part(2), part(3), part(4)] }
+        HwConfig { parts: [part(1), part(2), part(3), part(4), part(10)] }
     }
+}
+
+fn parts_of_any_length<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[PartOut; PARTS], D::Error> {
+    let saved: Vec<PartOut> = Vec::deserialize(d)?;
+    let mut parts = HwConfig::default().parts;
+    for (slot, p) in parts.iter_mut().zip(saved) {
+        *slot = p;
+    }
+    Ok(parts)
 }
 
 pub const OFFSET_RANGE_MS: std::ops::RangeInclusive<f32> = -100.0..=250.0;
@@ -361,11 +373,11 @@ mod tests {
     }
 
     fn base(beat: f64, bps: f64, samples: usize) -> Block {
-        Block { start_beat: beat, beats_per_sample: bps, samples, octaves: [0; 4], split_channels: true, mask: [true; 4], channel: None }
+        Block { start_beat: beat, beats_per_sample: bps, samples, octaves: [0; 5], split_channels: true, mask: [true; 5], channel: None }
     }
 
     fn routed(bass: Option<Route>) -> [Option<Route>; PARTS] {
-        [None, bass, None, None]
+        [None, bass, None, None, None]
     }
 
     /// Runs the router over `beats` of music and returns the bass note-ons as (seconds from
@@ -422,7 +434,7 @@ mod tests {
     #[test]
     fn host_skips_routed_parts() {
         let mask = Router::host_mask(&routed(Some(Route { channel: 0, offset_ms: 0.0 })));
-        assert_eq!(mask, [true, false, true, true]);
+        assert_eq!(mask, [true, false, true, true, true]);
     }
 
     #[test]
@@ -476,6 +488,14 @@ mod tests {
         // Leaving: all notes off on the routed part's channel (3 → 0xB2).
         assert!(log.iter().any(|(_, p, b)| *p == 1 && b == &vec![0xB2, 123, 0]));
         assert_eq!(state.status.lock().unwrap()[2].as_deref(), Some("port 'missing' not found"));
+    }
+
+    #[test]
+    fn sets_saved_with_four_parts_still_load() {
+        let old = r#"{"parts":[{"port":"MS-1","channel":1,"offset_ms":12.0},{"port":null,"channel":2,"offset_ms":0.0},{"port":null,"channel":3,"offset_ms":0.0},{"port":null,"channel":4,"offset_ms":0.0}]}"#;
+        let cfg: HwConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(cfg.parts[0].port.as_deref(), Some("MS-1"));
+        assert_eq!(cfg.parts[4], PartOut { port: None, channel: 10, offset_ms: 0.0 }, "drums get channel 10");
     }
 
     #[test]
