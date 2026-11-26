@@ -32,6 +32,10 @@ pub struct Block {
     /// Octave shift per layer (chords, bass, arp, melody).
     pub octaves: [i32; 4],
     pub split_channels: bool,
+    /// Which layers this player plays (chords, bass, arp, melody).
+    pub mask: [bool; 4],
+    /// Send everything on this channel (0-based) instead of the per-layer channels.
+    pub channel: Option<u8>,
 }
 
 impl Block {
@@ -124,15 +128,19 @@ impl Player {
         // The pattern loops forever, aligned to the host's beat 1.
         let length = pattern.length_beats;
         for n in &pattern.notes {
+            if !b.mask[n.layer.index()] {
+                continue;
+            }
             let pitch = n.pitch as i32 + b.octaves[n.layer.index()] * 12;
             if !(0..=127).contains(&pitch) {
                 continue;
             }
             let note = pitch as u8;
-            let channel = if b.split_channels { n.layer.channel() } else { 0 };
+            let channel = b.channel.unwrap_or(if b.split_channels { n.layer.channel() } else { 0 });
             let mut t = n.start + ((start - n.start) / length).ceil() * length;
             while t < end {
-                if t >= start {
+                // Nothing before the song's beat 1 (a delayed hardware window starts below 0).
+                if t >= start && t >= 0.0 {
                     let offset = to_offset(t);
                     // Retrigger: close the same note if it is still ringing.
                     if let Some(j) = self.active.iter().position(|a| a.note == note && a.channel == channel) {
@@ -170,7 +178,7 @@ mod tests {
     }
 
     fn block(beat: f64, bps: f64, samples: usize) -> Block {
-        Block { start_beat: beat, beats_per_sample: bps, samples, octaves: [0, -1, 1, 0], split_channels: true }
+        Block { start_beat: beat, beats_per_sample: bps, samples, octaves: [0, -1, 1, 0], split_channels: true, mask: [true; 4], channel: None }
     }
 
     /// Runs the player like a host would and checks note on/off pairing. Returns note-ons.
@@ -227,6 +235,25 @@ mod tests {
     #[test]
     fn survives_loop_jumps() {
         simulate(&pattern(2, 2), &[256], 2000, 128.0, Some(700));
+    }
+
+    #[test]
+    fn mask_and_channel_override() {
+        let p = pattern(0, 4);
+        let bps = 120.0 / 60.0 / 48_000.0;
+        let mut player = Player::default();
+        let mut ons = 0;
+        for k in 0..800 {
+            let b = Block { mask: [false, true, false, false], channel: Some(9), ..block(k as f64 * 512.0 * bps, bps, 512) };
+            player.play(&p, b);
+            for e in player.events.drain(..) {
+                assert_eq!(e.channel, 9);
+                ons += e.on as usize;
+            }
+        }
+        // 800 blocks of 512 samples at 120 bpm = 17.07 beats: two loops of the 8-beat pattern, plus a bit.
+        let bass_per_loop = p.notes.iter().filter(|n| n.layer == momotone_engine::Layer::Bass).count();
+        assert!(ons >= 2 * bass_per_loop && ons <= 3 * bass_per_loop, "{ons}");
     }
 
     #[test]

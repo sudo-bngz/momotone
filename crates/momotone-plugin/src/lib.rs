@@ -16,11 +16,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 mod editor;
+mod hwout;
 mod link;
 mod params;
 mod player;
 use params::{MomotoneParams, RoleChoice};
+use hwout::{HwState, Route, Router};
 use player::{Block, Player};
+use std::time::Instant;
 
 /// Everything that changes which notes are generated (but not how they're played back).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +109,12 @@ pub struct Momotone {
     last_beat: f64,
     sample_rate: f64,
     player: Player,
+    /// Direct hardware outputs.
+    hw: Arc<HwState>,
+    hw_tx: Option<hwout::Producer>,
+    hw_thread: Option<std::thread::JoinHandle<()>>,
+    router: Router,
+    routes: [Option<Route>; hwout::PARTS],
 }
 
 impl Default for Momotone {
@@ -122,6 +131,11 @@ impl Default for Momotone {
             last_beat: 0.0,
             sample_rate: 44_100.0,
             player: Player::default(),
+            hw: Arc::new(HwState::default()),
+            hw_tx: None,
+            hw_thread: None,
+            router: Router::default(),
+            routes: [None; hwout::PARTS],
         }
     }
 }
@@ -187,6 +201,17 @@ impl Momotone {
     }
 }
 
+impl Drop for Momotone {
+    /// Stop the MIDI sender before the plugin (and maybe its library) goes away: it sends
+    /// "all notes off" to the machines, then exits.
+    fn drop(&mut self) {
+        self.hw_tx = None;
+        if let Some(thread) = self.hw_thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 impl Plugin for Momotone {
     const NAME: &'static str = "Momotone";
     const VENDOR: &'static str = "Momo's Basement";
@@ -212,7 +237,7 @@ impl Plugin for Momotone {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        editor::create(self.params.clone(), self.ui.clone())
+        editor::create(self.params.clone(), self.ui.clone(), self.hw.clone())
     }
 
     fn task_executor(&mut self) -> TaskExecutor<Self> {
@@ -238,12 +263,23 @@ impl Plugin for Momotone {
         self.pattern = render(&s);
         self.current = Some(s);
         self.requested = Some(s);
+        if self.hw_tx.is_none() {
+            // The sender thread owns the MIDI ports; it stops when the plugin drops `hw_tx`.
+            let (tx, rx) = hwout::queue();
+            let thread = hwout::spawn_sender(self.params.hw.clone(), self.hw.clone(), rx, Box::new(hwout::MidirSink::default()));
+            self.hw_tx = Some(tx);
+            self.hw_thread = Some(thread);
+        }
         true
     }
 
     fn reset(&mut self) {
         // The host has stopped/restarted processing; any sounding notes are gone already.
         self.player.reset();
+        // Hardware keeps playing what it was sent, so close those notes explicitly.
+        if let Some(tx) = self.hw_tx.as_mut() {
+            self.router.release_all(Instant::now(), self.sample_rate, tx);
+        }
     }
 
     fn process(
@@ -266,7 +302,20 @@ impl Plugin for Momotone {
             samples: buffer.samples(),
             octaves: [p.oct_chords.value(), p.oct_bass.value(), p.oct_arp.value(), p.oct_melody.value()],
             split_channels: p.split_channels.value(),
+            mask: [true; 4],
+            channel: None,
         };
+        // Parts routed to hardware leave the DAW output.
+        if let Ok(cfg) = p.hw.try_read() {
+            let routes = cfg.routes();
+            if routes != self.routes {
+                self.player.release_all(0);
+                self.routes = routes;
+            }
+        }
+        let block = Block { mask: Router::host_mask(&self.routes), ..block };
+        let t0 = self.router.block_time(Instant::now(), block.samples, self.sample_rate);
+        let tempo = transport.tempo.unwrap_or(120.0).max(1.0);
 
         self.ui.beat.store(block.start_beat.to_bits(), Ordering::Relaxed);
         self.ui.tempo.store(transport.tempo.unwrap_or(0.0).to_bits(), Ordering::Relaxed);
@@ -290,6 +339,9 @@ impl Plugin for Momotone {
             None => {
                 self.requested = None;
                 self.player.stop();
+                if let Some(tx) = self.hw_tx.as_mut() {
+                    self.router.process(&self.pattern, block, self.routes, tempo, self.sample_rate, false, t0, tx);
+                }
                 self.flush(context);
                 return ProcessStatus::Normal;
             }
@@ -298,6 +350,9 @@ impl Plugin for Momotone {
         // New ideas come in on the bar line (the same one for a main and its followers).
         if link::swap_now(playing, &block, self.switch_at) && self.swap_in_pending() && playing {
             self.player.release_all(0);
+            if let Some(tx) = self.hw_tx.as_mut() {
+                self.router.release_all(t0, self.sample_rate, tx);
+            }
         }
         // A follower stays silent until it holds its own part of the main's loop
         // (just after loading, or after switching role or part).
@@ -307,6 +362,10 @@ impl Plugin for Momotone {
             self.player.play(&self.pattern, block);
         } else {
             self.player.stop();
+        }
+        if let Some(tx) = self.hw_tx.as_mut() {
+            let all = Block { mask: [true; 4], ..block };
+            self.router.process(&self.pattern, all, self.routes, tempo, self.sample_rate, playing && ready, t0, tx);
         }
         self.flush(context);
         ProcessStatus::Normal

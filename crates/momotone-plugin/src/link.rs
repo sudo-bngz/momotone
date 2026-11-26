@@ -98,7 +98,7 @@ mod tests {
     use super::*;
 
     fn block(beat: f64, samples: usize) -> Block {
-        Block { start_beat: beat, beats_per_sample: 124.0 / 60.0 / 48_000.0, samples, octaves: [0; 4], split_channels: true }
+        Block { start_beat: beat, beats_per_sample: 124.0 / 60.0 / 48_000.0, samples, octaves: [0; 4], split_channels: true, mask: [true; 4], channel: None }
     }
 
     #[test]

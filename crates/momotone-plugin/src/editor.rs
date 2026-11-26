@@ -5,6 +5,7 @@
 //! part's octave. Everything goes through the plugin's parameters, so the DAW records and
 //! recalls it and the Push can drive the same controls.
 
+use crate::hwout::{self, HwState};
 use crate::link;
 use crate::params::{KeyChoice, MomotoneParams, PartChoice, RoleChoice};
 use crate::{plan_for, settings_from, GenSettings, UiShared};
@@ -19,8 +20,9 @@ use nih_plug_egui::create_egui_editor;
 use std::f32::consts::PI;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-pub const WIDTH: u32 = 920;
+pub const WIDTH: u32 = 1000;
 pub const HEIGHT: u32 = 560;
 
 const BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
@@ -38,7 +40,7 @@ const PINK: Color32 = Color32::from_rgb(0xf2, 0x8c, 0xf0);
 const WARN: Color32 = Color32::from_rgb(0xff, 0x6b, 0x6b);
 
 const LANE_H: f32 = 40.0;
-const LEFT_W: f32 = 176.0;
+const LEFT_W: f32 = 372.0;
 
 fn part_color(layer: Layer) -> Color32 {
     match layer {
@@ -80,14 +82,31 @@ struct EditorData {
     selected_chord: usize,
     status: Option<(String, bool)>,
     last_export: Option<PathBuf>,
+    ports: PortCache,
 }
 
-pub fn create(params: Arc<MomotoneParams>, shared: Arc<UiShared>) -> Option<Box<dyn Editor>> {
+/// MIDI output ports, listed again at most every 2 s while a menu is open.
+#[derive(Default)]
+struct PortCache {
+    names: Vec<String>,
+    at: Option<Instant>,
+}
+
+impl PortCache {
+    fn refresh(&mut self) {
+        if self.at.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+            self.names = hwout::port_names();
+            self.at = Some(Instant::now());
+        }
+    }
+}
+
+pub fn create(params: Arc<MomotoneParams>, shared: Arc<UiShared>, hw: Arc<HwState>) -> Option<Box<dyn Editor>> {
     create_egui_editor(
         params.editor_state.clone(),
         EditorData::default(),
         |ctx, _| setup(ctx),
-        move |ctx, setter, data| draw(ctx, setter, data, &params, &shared),
+        move |ctx, setter, data| draw(ctx, setter, data, &params, &shared, &hw),
     )
 }
 
@@ -161,7 +180,7 @@ fn part_params(params: &MomotoneParams, layer: Layer) -> (&BoolParam, &IntParam)
     }
 }
 
-fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params: &MomotoneParams, shared: &UiShared) {
+fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params: &MomotoneParams, shared: &UiShared, hw: &HwState) {
     let follower = params.role.value() == RoleChoice::Follower;
     let group = (params.group.value() - 1).max(0) as usize;
     let part = params.part.value();
@@ -220,9 +239,9 @@ fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params
 
         ui.add_space(4.0);
         if follower {
-            follower_body(ui, setter, data, params, &plan, &pattern, &settings, part, shared);
+            follower_body(ui, setter, data, params, &plan, &pattern, &settings, part, shared, hw);
         } else {
-            main_body(ui, setter, data, params, &plan, &pattern, &settings, shared);
+            main_body(ui, setter, data, params, &plan, &pattern, &settings, shared, hw);
         }
     });
 }
@@ -462,6 +481,7 @@ fn main_body(
     pattern: &Pattern,
     settings: &GenSettings,
     shared: &UiShared,
+    hw: &HwState,
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
@@ -523,7 +543,7 @@ fn main_body(
         });
     });
     for layer in Layer::ALL {
-        part_lane(ui, setter, params, pattern, layer, shared, false);
+        part_lane(ui, setter, params, pattern, layer, shared, false, &mut data.ports, hw);
     }
     ui.add_space(4.0);
     footer(ui, data, plan, pattern, settings, params, shared);
@@ -541,6 +561,7 @@ fn follower_body(
     settings: &GenSettings,
     part: PartChoice,
     shared: &UiShared,
+    hw: &HwState,
 ) {
     let key = plan.key.root.name(plan.key.prefers_flats());
     ui.label(caps(
@@ -567,7 +588,7 @@ fn follower_body(
     chord_strip(ui, plan, data, shared);
     ui.add_space(6.0);
     ui.label(caps("part", 11.0, DIM));
-    part_lane(ui, setter, params, pattern, part.layer(), shared, true);
+    part_lane(ui, setter, params, pattern, part.layer(), shared, true, &mut data.ports, hw);
     ui.add_space(6.0);
     footer(ui, data, plan, pattern, settings, params, shared);
 }
@@ -608,6 +629,7 @@ fn chord_strip(ui: &mut Ui, plan: &Plan, data: &mut EditorData, shared: &UiShare
     ui.label(RichText::new(format!("> {line}")).font(mono(12.0)).color(TEXT));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn part_lane(
     ui: &mut Ui,
     setter: &ParamSetter,
@@ -616,12 +638,16 @@ fn part_lane(
     layer: Layer,
     shared: &UiShared,
     follower: bool,
+    ports: &mut PortCache,
+    hw: &HwState,
 ) {
     let (enabled, octave) = part_params(params, layer);
     // A follower always plays its part; the on/off switches belong to the main.
     let on = follower || enabled.value();
     let color = part_color(layer);
-    let channel = if params.split_channels.value() { layer.channel() + 1 } else { 1 };
+    let i = layer.index();
+    let out = params.hw.read().map(|c| c.parts[i].clone()).unwrap_or_else(|_| hwout::HwConfig::default().parts[i].clone());
+    let problem = hw.status.lock().ok().and_then(|s| s[i].clone());
 
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(vec2(LEFT_W, LANE_H), Layout::left_to_right(Align::Center), |ui| {
@@ -650,7 +676,7 @@ fn part_lane(
             if resp.clicked() && !follower {
                 set(setter, enabled, !on);
             }
-            ui.label(caps(&format!("ch{channel}"), 11.0, FAINT));
+            hardware_out(ui, params, i, &out, ports, problem.as_deref());
             // Octave: a small bipolar knob.
             let (kr, kresp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click_and_drag());
             knob_core(ui, setter, octave, kr, &kresp, true);
@@ -693,6 +719,69 @@ fn part_lane(
             painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0_f32, TEXT));
         }
     });
+}
+
+/// OUT (DAW or a hardware port), channel and latency offset of one part.
+fn hardware_out(ui: &mut Ui, params: &MomotoneParams, i: usize, out: &hwout::PartOut, ports: &mut PortCache, problem: Option<&str>) {
+    let edit = |f: &dyn Fn(&mut hwout::PartOut)| {
+        if let Ok(mut c) = params.hw.write() {
+            f(&mut c.parts[i]);
+        }
+    };
+    let shown = out.port.as_deref().map_or("daw".to_string(), |p| p.chars().take(13).collect());
+    let color = if problem.is_some() { WARN } else if out.port.is_some() { CYAN } else { DIM };
+    egui::ComboBox::from_id_salt(("out", i))
+        .width(118.0)
+        .selected_text(caps(&shown, 12.0, color))
+        .show_ui(ui, |ui| {
+            ports.refresh();
+            if choice(ui, out.port.is_none(), "daw (track routing)", TEXT) {
+                edit(&|p| p.port = None);
+            }
+            ui.add_space(4.0);
+            ui.label(caps("// hardware midi out", 10.0, DIM));
+            if ports.names.is_empty() {
+                ui.label(caps("no midi outputs found", 11.0, FAINT));
+            }
+            for name in ports.names.clone() {
+                if choice(ui, out.port.as_deref() == Some(name.as_str()), &name, TEXT) {
+                    edit(&|p| p.port = Some(name.clone()));
+                }
+            }
+        })
+        .response
+        .on_hover_text(match (problem, &out.port) {
+            (Some(p), _) => format!("Problem: {p}"),
+            (None, Some(port)) => format!("Straight to {port}, skipping the DAW"),
+            (None, None) => "Through the DAW: route it with a track's MIDI From".into(),
+        });
+
+    if out.port.is_some() {
+        egui::ComboBox::from_id_salt(("ch", i))
+            .width(44.0)
+            .selected_text(caps(&format!("ch{}", out.channel), 12.0, TEXT))
+            .show_ui(ui, |ui| {
+                for ch in 1..=16u8 {
+                    if choice(ui, out.channel == ch, &format!("ch {ch}"), TEXT) {
+                        edit(&|p| p.channel = ch);
+                    }
+                }
+            });
+        let mut ms = out.offset_ms;
+        let resp = ui
+            .add_sized(
+                vec2(62.0, 24.0),
+                egui::DragValue::new(&mut ms).range(hwout::OFFSET_RANGE_MS).speed(0.5).fixed_decimals(0).suffix(" ms"),
+            )
+            .on_hover_text("Latency offset: positive = later, negative = earlier. Drag, or double-click to type");
+        if resp.changed() {
+            edit(&|p| p.offset_ms = ms);
+        }
+    } else {
+        let channel = if params.split_channels.value() { i + 1 } else { 1 };
+        let (r, _) = ui.allocate_exact_size(vec2(114.0, 24.0), Sense::hover());
+        ui.painter().text(r.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, format!("CH{channel}"), mono(11.0), FAINT);
+    }
 }
 
 fn footer(

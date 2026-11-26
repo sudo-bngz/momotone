@@ -1,7 +1,7 @@
 use nih_plug::prelude::*;
 use momotone_engine::style::{index_of, STYLES};
 use nih_plug_egui::EguiState;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Main: the instance you play with. Follower: plays one part of its group's main.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
@@ -55,8 +55,12 @@ fn octave(name: &str) -> IntParam {
 #[derive(Params)]
 pub struct MomotoneParams {
     /// Window size, saved with the project.
-    #[persist = "editor-size-v3"]
+    #[persist = "editor-size-v4"]
     pub editor_state: Arc<EguiState>,
+
+    /// Direct hardware outputs (port, channel, offset per part), saved with the project.
+    #[persist = "hw-out"]
+    pub hw: Arc<RwLock<crate::hwout::HwConfig>>,
 
     // ---- Push bank 1: play
     /// Index into `momotone_engine::STYLES`; shown by name in the DAW.
@@ -110,6 +114,7 @@ impl Default for MomotoneParams {
     fn default() -> Self {
         Self {
             editor_state: EguiState::from_size(crate::editor::WIDTH, crate::editor::HEIGHT),
+            hw: Arc::new(RwLock::new(crate::hwout::HwConfig::default())),
             role: EnumParam::new("Role", RoleChoice::Main),
             group: IntParam::new("Link Group", 1, IntRange::Linear { min: 1, max: crate::link::GROUPS as i32 }),
             part: EnumParam::new("Plays", PartChoice::Bass),
