@@ -67,13 +67,16 @@ fn main() {
 
     let plan: Plan = match cmd.as_str() {
         "styles" => {
-            for s in style::STYLES {
-                println!("{:<11} {:<20} {:>3} bpm  {}", s.id, s.label, s.tempo, s.mode.name());
+            for family in style::FAMILIES {
+                println!("{}", family.to_uppercase());
+                for s in style::STYLES.iter().filter(|s| s.family == *family) {
+                    println!("  {:<12} {:<20} {:>3} bpm  {}", s.id, s.label, s.tempo, s.mode.name());
+                }
             }
             return;
         }
         "prompt" => {
-            println!("{}", spec::SYSTEM_PROMPT);
+            println!("{}", spec::system_prompt());
             return;
         }
         "gen" => {

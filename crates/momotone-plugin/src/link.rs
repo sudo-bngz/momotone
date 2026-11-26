@@ -29,21 +29,21 @@ const VALID: u64 = 1 << 63;
 /// Packs everything the main shares into one word, so readers never see half an update.
 pub fn pack(s: &GenSettings) -> u64 {
     VALID
-        | (s.style as u64 & 0xF)
-        | (s.key as u64 & 0xF) << 4
-        | (s.bars as u64 & 0x1F) << 8
-        | (s.energy as u64 & 0x7F) << 13
-        | (s.seed & 0xFFFF) << 20
+        | (s.style as u64 & 0x3F)
+        | (s.key as u64 & 0xF) << 6
+        | (s.bars as u64 & 0x1F) << 10
+        | (s.energy as u64 & 0x7F) << 15
+        | (s.seed & 0xFFFF) << 22
 }
 
 /// The shared settings; `layers` is left to the reader.
 pub fn unpack(v: u64) -> Option<GenSettings> {
     (v & VALID != 0).then(|| GenSettings {
-        style: (v & 0xF) as usize,
-        key: (v >> 4 & 0xF) as usize,
-        bars: (v >> 8 & 0x1F) as u32,
-        energy: (v >> 13 & 0x7F) as u8,
-        seed: v >> 20 & 0xFFFF,
+        style: (v & 0x3F) as usize,
+        key: (v >> 6 & 0xF) as usize,
+        bars: (v >> 10 & 0x1F) as u32,
+        energy: (v >> 15 & 0x7F) as u8,
+        seed: v >> 22 & 0xFFFF,
         layers: Layers::all(),
     })
 }
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn packing_round_trips() {
-        let s = GenSettings { style: 7, key: 11, bars: 16, seed: 500, energy: 100, layers: Layers::all() };
+        let s = GenSettings { style: 35, key: 11, bars: 16, seed: 500, energy: 100, layers: Layers::all() };
         assert_eq!(unpack(pack(&s)), Some(s));
         assert_eq!(unpack(0), None);
     }

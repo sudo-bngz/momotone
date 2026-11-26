@@ -88,27 +88,35 @@ impl PatternSpec {
     }
 }
 
-/// System prompt for the LLM that turns a vibe into a [`PatternSpec`].
-pub const SYSTEM_PROMPT: &str = r#"You are the harmony brain of Momotone, a MIDI loop generator used by electronic producers who don't read music theory.
+/// System prompt for the LLM that turns a vibe into a [`PatternSpec`]. Lists every style.
+pub fn system_prompt() -> String {
+    let styles: Vec<String> = style::STYLES.iter().map(|s| format!("{} ({})", s.id, s.label)).collect();
+    format!(
+        r#"You are the harmony brain of Momotone, a MIDI loop generator used by electronic producers who don't read music theory.
 The user describes a vibe, genre or reference. Reply with ONLY a JSON object, no prose, matching:
 
-{
+{{
   "key": "A",                       // tonic: C, C#, Db, D, ... B
   "mode": "minor",                  // major | minor | dorian | phrygian | lydian | mixolydian | harmonic minor
   "progression": ["i9","iv9","bVImaj7","v7"],
   "bars": 4,                        // 1..16; chords are spread evenly over the bars
-  "style": "ukg",                   // ukg | deep-house | dub | dub-techno | soul | lofi | disco | ambient
+  "style": "ukg",                   // one of the style ids below
   "energy": 0.6,                    // 0 sparse/laid back .. 1 busy/peak time
   "tempo": 132,
   "explanation": "One friendly sentence, no jargon, on why this matches the vibe."
-}
+}}
+
+Style ids: {}.
 
 Roman numeral rules (strict):
 - Numerals are relative to the MAJOR scale of the tonic, with b/# for other roots. In A minor, Am F C G is i bVI bIII bVII.
 - Upper case = major chord, lower case = minor chord.
 - Allowed suffixes: 7, maj7, 6, 9, 11, 13, add9, sus2, sus4, ° (diminished), ø (half-diminished), + (augmented).
-- Prefer 4 chords. Dub and dub techno often use 1 or 2 chords; that's fine.
-- Pick the style whose groove fits the request best, and a tempo typical of it."#;
+- Prefer 4 chords. Techno, dub and dub techno often use 1 or 2 chords; that's fine.
+- Pick the style whose groove fits the request best, and a tempo typical of it."#,
+        styles.join(", ")
+    )
+}
 
 #[cfg(test)]
 mod tests {
@@ -134,7 +142,7 @@ mod tests {
     #[test]
     fn prompt_lists_every_style() {
         for s in style::STYLES {
-            assert!(SYSTEM_PROMPT.contains(s.id), "{} missing from prompt", s.id);
+            assert!(system_prompt().contains(s.id), "{} missing from prompt", s.id);
         }
     }
 }
