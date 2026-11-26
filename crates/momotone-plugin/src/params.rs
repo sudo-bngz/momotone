@@ -1,4 +1,6 @@
 use nih_plug::prelude::*;
+use nih_plug_egui::EguiState;
+use std::sync::Arc;
 
 /// Must stay in the same order as `momotone_engine::STYLES` (a test checks it).
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
@@ -54,6 +56,10 @@ fn octave(name: &str) -> IntParam {
 
 #[derive(Params)]
 pub struct MomotoneParams {
+    /// Window size, saved with the project.
+    #[persist = "editor-state"]
+    pub editor_state: Arc<EguiState>,
+
     #[id = "style"]
     pub style: EnumParam<StyleChoice>,
     #[id = "key"]
@@ -95,6 +101,7 @@ pub struct MomotoneParams {
 impl Default for MomotoneParams {
     fn default() -> Self {
         Self {
+            editor_state: EguiState::from_size(crate::editor::WIDTH, crate::editor::HEIGHT),
             style: EnumParam::new("Style", StyleChoice::Ukg),
             key: EnumParam::new("Key", KeyChoice::A),
             energy: FloatParam::new("Energy", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })

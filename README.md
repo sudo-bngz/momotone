@@ -22,6 +22,19 @@ VST3 + CLAP, written in Rust with [nih-plug](https://github.com/robbert-vdh/nih-
 
 The plugin follows your project tempo; the tempo column is what the `.mid` export uses.
 
+## The screen
+
+![Momotone](docs/momotone-ui.png)
+
+1. **Style**: pick a genre. **Key**: pick a root note (the style picks the scale). **Bars**: loop length.
+2. **Energy**: drag from *laid back* to *peak time*. Double-click resets to 50 %.
+3. **New idea**: jumps to a random idea in the style; ◀ ▶ step through ideas one by one. The number is saved with your project.
+4. **Chords**: the progression, with the Roman numeral under each chord. Click one to read what it does. While playing, the current chord is outlined in green.
+5. **Parts**: turn each part on or off, shift its octave, and see its notes. The playhead follows your DAW.
+6. **Export MIDI loop**: writes a folder to `~/Music/Momotone/` (named after style, key, tempo, energy and idea) with one `.mid` per part plus `All parts.mid`. Add that folder to Live's *Places* once, and every export shows up in the browser, ready to drag onto your machine tracks or a Push clip slot.
+
+No DAW at hand? `cargo run --release -p momotone-plugin --features standalone` opens the same screen as an app.
+
 ## Parameters
 
 | Parameter | What it does |
@@ -120,8 +133,8 @@ UK garage bass     "0..3..1.....2.4.0..3..1...5.2..7"   (2 bars)
 
 ## Roadmap
 
-- [ ] Custom UI: big style buttons, energy fader, chord strip, "New idea", piano-roll preview
-- [ ] Drag the loop from the plugin straight into the DAW as a clip
+- [x] Custom UI: style buttons, energy fader, chord strip, "New idea", piano-roll preview, MIDI export
+- [ ] Drag a part from the plugin straight onto a DAW track (native OS drag, macOS first)
 - [ ] AI prompt box (LLM call from a background thread)
 - [ ] Lock a part or a bar you like and regenerate the rest
 - [ ] Per-part MIDI channel and velocity curves, humanize

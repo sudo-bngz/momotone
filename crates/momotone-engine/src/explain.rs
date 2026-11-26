@@ -40,9 +40,14 @@ fn role(root: i32, major_third: bool, minor_key: bool) -> &'static str {
     }
 }
 
+/// One plain-language line for a chord of the plan, e.g. "Fm9 (i9): home: ...".
+pub fn chord_line(plan: &Plan, chord: &crate::chord::Chord) -> String {
+    let major_third = chord.intervals.contains(&4);
+    format!("{} ({}): {}", chord.name(&plan.key), chord.symbol, role(chord.root, major_third, plan.key.mode.is_minor()))
+}
+
 /// Style line, mode line, then one line per distinct chord.
 pub fn explain(plan: &Plan) -> Vec<String> {
-    let minor_key = plan.key.mode.is_minor();
     let mut lines = vec![plan.style.blurb.to_string(), mode_blurb(plan.key.mode).to_string()];
     let mut seen = Vec::new();
     for chord in &plan.progression {
@@ -50,8 +55,7 @@ pub fn explain(plan: &Plan) -> Vec<String> {
         if seen.contains(&name) {
             continue;
         }
-        let major_third = chord.intervals.contains(&4);
-        lines.push(format!("{name} ({}): {}", chord.symbol, role(chord.root, major_third, minor_key)));
+        lines.push(chord_line(plan, chord));
         seen.push(name);
     }
     if plan.progression.iter().any(|c| c.intervals.iter().any(|&i| i >= 10)) {

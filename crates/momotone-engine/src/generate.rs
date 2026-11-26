@@ -93,6 +93,35 @@ pub struct Pattern {
     pub chords: Vec<(f64, String)>,
 }
 
+impl Pattern {
+    /// Only one part, e.g. to export the bass on its own.
+    pub fn only(&self, layer: Layer) -> Pattern {
+        Pattern {
+            length_beats: self.length_beats,
+            notes: self.notes.iter().filter(|n| n.layer == layer).copied().collect(),
+            chords: self.chords.clone(),
+        }
+    }
+
+    /// Shifts each part by its own number of octaves (chords, bass, arp, melody).
+    /// Notes pushed outside the MIDI range are dropped.
+    pub fn transposed(&self, octaves: [i32; 4]) -> Pattern {
+        let notes = self
+            .notes
+            .iter()
+            .filter_map(|n| {
+                let p = n.pitch as i32 + 12 * octaves[n.layer.index()];
+                (0..=127).contains(&p).then(|| Note { pitch: p as u8, ..*n })
+            })
+            .collect();
+        Pattern { length_beats: self.length_beats, notes, chords: self.chords.clone() }
+    }
+
+    pub fn has(&self, layer: Layer) -> bool {
+        self.notes.iter().any(|n| n.layer == layer)
+    }
+}
+
 /// Renders the plan. Each layer has its own random stream, so muting one layer never
 /// changes what the others play.
 pub fn generate(plan: &Plan, layers: Layers, seed: u64) -> Pattern {
@@ -470,6 +499,19 @@ mod tests {
 
     fn count(p: &Pattern, l: Layer) -> usize {
         p.notes.iter().filter(|n| n.layer == l).count()
+    }
+
+    #[test]
+    fn split_and_transpose() {
+        let plan = STYLES[1].plan(PitchClass::parse("E").unwrap(), 2, 0.5, 2);
+        let p = generate(&plan, Layers::all(), 2);
+        let bass = p.only(Layer::Bass);
+        assert!(bass.notes.iter().all(|n| n.layer == Layer::Bass) && !bass.notes.is_empty());
+        let up = p.transposed([0, 1, 0, 0]);
+        for (a, b) in p.notes.iter().zip(&up.notes) {
+            let d = if a.layer == Layer::Bass { 12 } else { 0 };
+            assert_eq!(a.pitch as i32 + d, b.pitch as i32);
+        }
     }
 
     #[test]
