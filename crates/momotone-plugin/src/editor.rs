@@ -10,7 +10,7 @@ use crate::link;
 use crate::params::{KeyChoice, MomotoneParams, PartChoice, RoleChoice};
 use crate::{plan_for, settings_from, GenSettings, UiShared};
 use momotone_engine::style::{FAMILIES, STYLES};
-use momotone_engine::{explain, generate, midi, Layer, Layers, Pattern, PitchClass, Plan};
+use momotone_engine::{explain, midi, Layer, Layers, Pattern, PitchClass, Plan};
 use nih_plug::prelude::*;
 use nih_plug_egui::egui::{
     self, epaint::Shadow, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, FontData, FontDefinitions, FontFamily,
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub const WIDTH: u32 = 1000;
+pub const WIDTH: u32 = 1020;
 pub const HEIGHT: u32 = 610;
 
 const BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
@@ -40,7 +40,7 @@ const PINK: Color32 = Color32::from_rgb(0xf2, 0x8c, 0xf0);
 const WARN: Color32 = Color32::from_rgb(0xff, 0x6b, 0x6b);
 
 const LANE_H: f32 = 40.0;
-const LEFT_W: f32 = 372.0;
+const LEFT_W: f32 = 396.0;
 
 fn part_color(layer: Layer) -> Color32 {
     match layer {
@@ -200,7 +200,7 @@ fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params
     if let Some(settings) = view {
         if data.cache.as_ref().map(|c| c.0) != Some(settings) {
             let plan = plan_for(&settings);
-            let pattern = generate(&plan, Layers::all(), settings.seed);
+            let pattern = momotone_engine::generate_seeded(&plan, Layers::all(), settings.part_seeds());
             data.selected_chord = data.selected_chord.min(plan.progression.len() - 1);
             data.cache = Some((settings, plan, pattern));
         }
@@ -476,6 +476,40 @@ fn btn(ui: &mut Ui, text: &str, on: bool, color: Color32, min_w: f32) -> Respons
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
+// ------------------------------------------------------------------ locks
+
+/// A small padlock: closed when `locked`.
+fn padlock(painter: &egui::Painter, c: Pos2, locked: bool, color: Color32) {
+    let body = Rect::from_center_size(c + vec2(0.0, 3.0), vec2(10.0, 7.0));
+    painter.rect_filled(body, 1.5_f32, color);
+    let r = 3.0;
+    let lift = if locked { 0.0 } else { 2.5 };
+    let top = Pos2::new(c.x, body.top() - 2.0 - lift);
+    let arc: Vec<Pos2> = (0..=12).map(|k| {
+        let a = PI + PI * k as f32 / 12.0;
+        top + vec2(a.cos() * r, a.sin() * r)
+    }).collect();
+    painter.add(Shape::line(arc, Stroke::new(1.5_f32, color)));
+    painter.line_segment([top + vec2(-r, 0.0), Pos2::new(top.x - r, body.top())], Stroke::new(1.5_f32, color));
+    if locked {
+        painter.line_segment([top + vec2(r, 0.0), Pos2::new(top.x + r, body.top())], Stroke::new(1.5_f32, color));
+    }
+}
+
+/// A padlock button. Returns true when clicked.
+fn lock_button(ui: &mut Ui, locked: bool, hint: &str) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(vec2(20.0, 24.0), Sense::click());
+    let color = if locked { MINT } else if resp.hovered() { TEXT } else { FAINT };
+    padlock(ui.painter(), rect.center(), locked, color);
+    resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(hint).clicked()
+}
+
+fn edit_locks(params: &MomotoneParams, f: impl FnOnce(&mut crate::Locks)) {
+    if let Ok(mut l) = params.locks.write() {
+        f(&mut l);
+    }
+}
+
 // ------------------------------------------------------------------ bodies
 
 #[allow(clippy::too_many_arguments)]
@@ -511,6 +545,8 @@ fn main_body(
             "Each number is a different idea in this style. Drag to browse",
         );
         ui.vertical(|ui| {
+            // Fixed width, so the lock counter showing up doesn't shift the chord strip.
+            ui.set_width(124.0);
             ui.add_space(18.0);
             let cur = params.variation.value();
             ui.horizontal(|ui| {
@@ -525,11 +561,37 @@ fn main_body(
             if btn(ui, "new idea", true, MINT, 64.0).on_hover_text("Jump to a random idea in this style").clicked() {
                 set(setter, &params.variation, random_idea(cur));
             }
+            let n = settings.locks.count();
+            if n > 0 {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.label(caps(&format!("{n} locked"), 11.0, MINT));
+                    if btn(ui, "unlock", false, MINT, 0.0).on_hover_text("Unlock everything: ideas change all parts again").clicked() {
+                        edit_locks(params, |l| *l = crate::Locks::default());
+                    }
+                });
+            }
         });
         ui.add_space(8.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
-            ui.label(caps("chords", 11.0, DIM));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(caps("chords", 11.0, DIM));
+                let locked = settings.locks.harmony.is_some();
+                let hint = if locked {
+                    format!("Harmony locked to idea #{}: new ideas keep these chords. Click to unlock", settings.harmony_seed())
+                } else {
+                    "Lock the harmony: new ideas keep this chord progression and change the parts".to_string()
+                };
+                if lock_button(ui, locked, &hint) {
+                    let seed = settings.harmony_seed();
+                    edit_locks(params, |l| l.harmony = if locked { None } else { Some(seed) });
+                }
+                if locked {
+                    ui.label(caps("harmony locked", 10.0, MINT));
+                }
+            });
             chord_strip(ui, plan, data, shared);
             ui.label(RichText::new(plan.style.blurb).font(mono(11.0)).color(DIM));
         });
@@ -550,7 +612,7 @@ fn main_body(
         });
     });
     for layer in Layer::ALL {
-        part_lane(ui, setter, params, pattern, layer, shared, false, &mut data.ports, hw);
+        part_lane(ui, setter, params, pattern, layer, shared, false, &mut data.ports, hw, settings);
     }
     ui.add_space(4.0);
     footer(ui, data, plan, pattern, settings, params, shared);
@@ -595,7 +657,7 @@ fn follower_body(
     chord_strip(ui, plan, data, shared);
     ui.add_space(6.0);
     ui.label(caps("part", 11.0, DIM));
-    part_lane(ui, setter, params, pattern, part.layer(), shared, true, &mut data.ports, hw);
+    part_lane(ui, setter, params, pattern, part.layer(), shared, true, &mut data.ports, hw, settings);
     ui.add_space(6.0);
     footer(ui, data, plan, pattern, settings, params, shared);
 }
@@ -647,6 +709,7 @@ fn part_lane(
     follower: bool,
     ports: &mut PortCache,
     hw: &HwState,
+    settings: &GenSettings,
 ) {
     let (enabled, octave) = part_params(params, layer);
     // A follower always plays its part; the on/off switches belong to the main.
@@ -659,6 +722,21 @@ fn part_lane(
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(vec2(LEFT_W, LANE_H), Layout::left_to_right(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
+            // Lock: keep this part's idea while new ideas change the rest (the main decides).
+            if follower {
+                ui.allocate_exact_size(vec2(20.0, 24.0), Sense::hover());
+            } else {
+                let locked = settings.locks.parts[i].is_some();
+                let seed = settings.part_seeds()[i];
+                let hint = if locked {
+                    format!("{} locked to idea #{seed}: new ideas change the other parts. Click to unlock", layer.name())
+                } else {
+                    format!("Lock the {}: keep it while new ideas change the other parts", layer.name().to_lowercase())
+                };
+                if lock_button(ui, locked, &hint) {
+                    edit_locks(params, |l| l.parts[i] = if locked { None } else { Some(seed) });
+                }
+            }
             // On/off: a square LED and the part name.
             let (r, resp) = ui.allocate_exact_size(vec2(86.0, LANE_H), Sense::click());
             let led = Rect::from_center_size(Pos2::new(r.left() + 7.0, r.center().y), vec2(10.0, 10.0));
@@ -923,9 +1001,9 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("momotone-test-{}", std::process::id()));
         std::env::set_var("HOME", &tmp);
         let dub = momotone_engine::style::index_of("dub").unwrap();
-        let s = GenSettings { style: dub, key: 9, bars: 4, seed: 3, energy: 60, layers: Layers { arp: false, ..Layers::all() } };
+        let s = GenSettings { style: dub, key: 9, bars: 4, seed: 3, energy: 60, layers: Layers { arp: false, ..Layers::all() }, ..Default::default() };
         let plan = plan_for(&s);
-        let pattern = generate(&plan, Layers::all(), s.seed);
+        let pattern = momotone_engine::generate_seeded(&plan, Layers::all(), s.part_seeds());
         let dir = export(&plan, &pattern, &s, [0, -1, 0, 1, 0], 72.0).unwrap();
         let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         files.sort();

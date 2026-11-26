@@ -9,7 +9,7 @@
 //!   thread swaps it in on the next bar line, so changes land in time like a Push clip
 //!   launch. The previous pattern is left in the slot and freed by the next background run.
 
-use momotone_engine::{generate, Layers, Pattern, PitchClass, Plan, STYLES};
+use momotone_engine::{Layers, Pattern, PitchClass, Plan, STYLES};
 use nih_plug::prelude::*;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -25,13 +25,30 @@ use hwout::{HwState, Route, Router};
 use player::{Block, Player};
 use std::time::Instant;
 
+/// Parts (and the harmony) pinned to the idea they had when locked. `None` = follows the
+/// current idea. Saved with the project.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Locks {
+    pub harmony: Option<u64>,
+    pub parts: [Option<u64>; momotone_engine::Layer::COUNT],
+}
+
+impl Locks {
+    pub fn count(&self) -> usize {
+        self.harmony.is_some() as usize + self.parts.iter().filter(|p| p.is_some()).count()
+    }
+}
+
 /// Everything that changes which notes are generated (but not how they're played back).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GenSettings {
     pub style: usize,
     pub key: usize,
     pub bars: u32,
+    /// The idea number on the Idea knob.
     pub seed: u64,
+    pub locks: Locks,
     /// Energy in percent, so dragging the knob doesn't flood the background thread.
     pub energy: u8,
     pub layers: Layers,
@@ -39,21 +56,42 @@ pub struct GenSettings {
 
 pub fn plan_for(s: &GenSettings) -> Plan {
     let style = &STYLES[s.style.min(STYLES.len() - 1)];
-    style.plan(PitchClass::ALL[s.key % 12], s.bars, s.energy as f64 / 100.0, s.seed)
+    style.plan(PitchClass::ALL[s.key % 12], s.bars, s.energy as f64 / 100.0, s.harmony_seed())
 }
 
 pub fn render(s: &GenSettings) -> Pattern {
-    generate(&plan_for(s), s.layers, s.seed)
+    momotone_engine::generate_seeded(&plan_for(s), s.layers, s.part_seeds())
+}
+
+impl GenSettings {
+    /// The idea the chord progression comes from.
+    pub fn harmony_seed(&self) -> u64 {
+        self.locks.harmony.unwrap_or(self.seed)
+    }
+
+    /// The idea each part's own choices come from.
+    pub fn part_seeds(&self) -> [u64; momotone_engine::Layer::COUNT] {
+        std::array::from_fn(|i| self.locks.parts[i].unwrap_or(self.seed))
+    }
+}
+
+fn settings_without_locks(p: &MomotoneParams) -> GenSettings {
+    GenSettings { locks: Locks::default(), ..settings_from_parts(p) }
 }
 
 /// Reads the parameters that shape the music. Used by the audio thread and the editor,
 /// so both always see the very same pattern.
 pub fn settings_from(p: &MomotoneParams) -> GenSettings {
+    settings_from_parts(p)
+}
+
+fn settings_from_parts(p: &MomotoneParams) -> GenSettings {
     GenSettings {
         style: p.style.value().max(0) as usize,
         key: p.key.value() as usize,
         bars: p.bars.value() as u32,
         seed: p.variation.value() as u64,
+        locks: p.locks.read().map(|l| *l).unwrap_or_default(),
         energy: (p.energy.value() * 100.0).round().clamp(0.0, 100.0) as u8,
         layers: Layers {
             chords: p.chords.value(),
@@ -144,6 +182,8 @@ pub struct Momotone {
     /// Direct hardware outputs.
     hw: Arc<HwState>,
     hw_tx: Option<hwout::Producer>,
+    /// Last locks read on the audio thread.
+    locks: Locks,
     hw_thread: Option<std::thread::JoinHandle<()>>,
     /// Requests to our own render thread (see `spawn_renderer`).
     render_tx: Option<rtrb::Producer<GenSettings>>,
@@ -168,6 +208,7 @@ impl Default for Momotone {
             player: Player::default(),
             hw: Arc::new(HwState::default()),
             hw_tx: None,
+            locks: Locks::default(),
             hw_thread: None,
             render_tx: None,
             render_thread: None,
@@ -178,8 +219,12 @@ impl Default for Momotone {
 }
 
 impl Momotone {
-    fn settings(&self) -> GenSettings {
-        settings_from(&self.params)
+    /// On the audio thread: never waits on the editor holding the locks.
+    fn settings(&mut self) -> GenSettings {
+        if let Ok(l) = self.params.locks.try_read() {
+            self.locks = *l;
+        }
+        GenSettings { locks: self.locks, ..settings_without_locks(&self.params) }
     }
 
     fn is_follower(&self) -> bool {
@@ -192,7 +237,7 @@ impl Momotone {
 
     /// What this instance should play now, and from which beat: its own settings for a main,
     /// its part of the group's main for a follower (`None` while there is no main yet).
-    fn wanted(&self, beat: f64, playing: bool) -> Option<(GenSettings, f64)> {
+    fn wanted(&mut self, beat: f64, playing: bool) -> Option<(GenSettings, f64)> {
         if self.is_follower() {
             self.ui.conflict.store(false, Ordering::Relaxed);
             let (mut s, at) = link::read(self.group())?;
@@ -442,8 +487,11 @@ mod tests {
 
     #[test]
     fn follower_plays_exactly_the_mains_part() {
-        let main = GenSettings { style: 0, key: 9, bars: 4, seed: 12, energy: 65, layers: Layers::all() };
-        let shared = link::unpack(link::pack(&main)).unwrap();
+        let mut locks = Locks::default();
+        locks.harmony = Some(40);
+        locks.parts[1] = Some(77);
+        let main = GenSettings { style: 0, key: 9, bars: 4, seed: 12, energy: 65, layers: Layers::all(), locks };
+        let shared = GenSettings { locks: link::unpack_locks(link::pack_locks(&main.locks)), ..link::unpack(link::pack(&main)).unwrap() };
         for layer in momotone_engine::Layer::ALL {
             let follower = GenSettings { layers: link::part_layers(layer), ..shared };
             assert_eq!(render(&main).only(layer).notes, render(&follower).notes, "{layer:?}");
@@ -452,7 +500,7 @@ mod tests {
 
     #[test]
     fn render_is_deterministic() {
-        let s = GenSettings { style: 0, key: 5, bars: 4, seed: 9, energy: 70, layers: Layers::all() };
+        let s = GenSettings { style: 0, key: 5, bars: 4, seed: 9, energy: 70, layers: Layers::all(), ..Default::default() };
         assert_eq!(render(&s).notes, render(&s).notes);
     }
 }
@@ -479,6 +527,7 @@ mod render_fuzz {
                 seed: 1 + next(500),
                 energy: next(101) as u8,
                 layers: Layers { chords: next(2) == 1, bass: next(2) == 1, arp: next(2) == 1, melody: next(2) == 1, drums: next(2) == 1 },
+                locks: Locks { harmony: (next(2) == 1).then(|| 1 + next(500)), parts: std::array::from_fn(|_| (next(3) == 1).then(|| 1 + next(500))) },
             };
             let r = std::panic::catch_unwind(|| render(&s));
             if r.is_err() {

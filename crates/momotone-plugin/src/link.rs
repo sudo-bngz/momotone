@@ -7,7 +7,7 @@
 //! thread.
 
 use crate::player::Block;
-use crate::GenSettings;
+use crate::{GenSettings, Locks};
 use momotone_engine::{Layer, Layers};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,6 +15,9 @@ pub const GROUPS: usize = 4;
 
 static SETTINGS: [AtomicU64; GROUPS] = [const { AtomicU64::new(0) }; GROUPS];
 static SWITCH_AT: [AtomicU64; GROUPS] = [const { AtomicU64::new(0) }; GROUPS];
+static LOCKS: [AtomicU64; GROUPS] = [const { AtomicU64::new(0) }; GROUPS];
+/// Seqlock: odd while a main is writing, so a follower never mixes two updates.
+static VERSION: [AtomicU64; GROUPS] = [const { AtomicU64::new(0) }; GROUPS];
 /// Which instance last published in each group, to spot two mains in one group.
 static OWNER: [AtomicU64; GROUPS] = [const { AtomicU64::new(0) }; GROUPS];
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -45,15 +48,35 @@ pub fn unpack(v: u64) -> Option<GenSettings> {
         energy: (v >> 15 & 0x7F) as u8,
         seed: v >> 22 & 0xFFFF,
         layers: Layers::all(),
+        locks: Locks::default(),
     })
+}
+
+/// Locks in one word: 10 bits each (a flag + an idea number up to 511) for the harmony and
+/// every part.
+pub fn pack_locks(l: &Locks) -> u64 {
+    let one = |v: Option<u64>| v.map_or(0, |n| 0x200 | (n & 0x1FF));
+    let mut w = one(l.harmony);
+    for (i, p) in l.parts.iter().enumerate() {
+        w |= one(*p) << (10 * (i + 1));
+    }
+    w
+}
+
+pub fn unpack_locks(w: u64) -> Locks {
+    let one = |v: u64| (v & 0x200 != 0).then_some(v & 0x1FF);
+    Locks { harmony: one(w & 0x3FF), parts: std::array::from_fn(|i| one(w >> (10 * (i + 1)) & 0x3FF)) }
 }
 
 /// Called by the main instance on every block. Returns false if another main published in
 /// this group since our last block (two mains in one group).
 pub fn publish(group: usize, instance: u64, s: &GenSettings, switch_at: f64) -> bool {
     let g = group.min(GROUPS - 1);
+    VERSION[g].fetch_add(1, Ordering::AcqRel);
     SWITCH_AT[g].store(switch_at.to_bits(), Ordering::Release);
     SETTINGS[g].store(pack(s), Ordering::Release);
+    LOCKS[g].store(pack_locks(&s.locks), Ordering::Release);
+    VERSION[g].fetch_add(1, Ordering::AcqRel);
     let previous = OWNER[g].swap(instance, Ordering::AcqRel);
     previous == 0 || previous == instance
 }
@@ -61,8 +84,18 @@ pub fn publish(group: usize, instance: u64, s: &GenSettings, switch_at: f64) -> 
 /// What the group's main is playing, and the beat it switched (or will switch) on.
 pub fn read(group: usize) -> Option<(GenSettings, f64)> {
     let g = group.min(GROUPS - 1);
+    // Retry while a main is mid-update (a handful of stores; a few tries at most).
+    for _ in 0..16 {
+        let v = VERSION[g].load(Ordering::Acquire);
+        let (word, locks, at) = (SETTINGS[g].load(Ordering::Acquire), LOCKS[g].load(Ordering::Acquire), SWITCH_AT[g].load(Ordering::Acquire));
+        if v % 2 == 0 && VERSION[g].load(Ordering::Acquire) == v {
+            let s = unpack(word)?;
+            return Some((GenSettings { locks: unpack_locks(locks), ..s }, f64::from_bits(at)));
+        }
+        std::hint::spin_loop();
+    }
     let s = unpack(SETTINGS[g].load(Ordering::Acquire))?;
-    Some((s, f64::from_bits(SWITCH_AT[g].load(Ordering::Acquire))))
+    Some((GenSettings { locks: unpack_locks(LOCKS[g].load(Ordering::Acquire)), ..s }, f64::from_bits(SWITCH_AT[g].load(Ordering::Acquire))))
 }
 
 /// Only this part.
@@ -104,14 +137,17 @@ mod tests {
 
     #[test]
     fn packing_round_trips() {
-        let s = GenSettings { style: 35, key: 11, bars: 16, seed: 500, energy: 100, layers: Layers::all() };
+        let s = GenSettings { style: 35, key: 11, bars: 16, seed: 500, energy: 100, layers: Layers::all(), ..Default::default() };
         assert_eq!(unpack(pack(&s)), Some(s));
         assert_eq!(unpack(0), None);
     }
 
     #[test]
     fn publish_and_read_per_group() {
-        let s = GenSettings { style: 2, key: 3, bars: 4, seed: 42, energy: 55, layers: Layers::all() };
+        let mut locks = Locks::default();
+        locks.harmony = Some(500);
+        locks.parts[4] = Some(1);
+        let s = GenSettings { style: 2, key: 3, bars: 4, seed: 42, energy: 55, layers: Layers::all(), locks };
         let id = new_instance_id();
         assert!(publish(3, id, &s, 8.0));
         assert!(publish(3, id, &s, 8.0));
@@ -119,7 +155,19 @@ mod tests {
         assert!(!publish(3, other, &s, 8.0), "second main in the same group is reported");
         let (r, at) = read(3).unwrap();
         assert_eq!((r.style, r.key, r.bars, r.seed, r.energy), (2, 3, 4, 42, 55));
+        assert_eq!(r.locks, locks, "followers get the main's locks");
         assert_eq!(at, 8.0);
+    }
+
+    #[test]
+    fn locks_pack() {
+        for l in [
+            Locks::default(),
+            Locks { harmony: Some(1), parts: [None, Some(500), None, Some(250), Some(499)] },
+            Locks { harmony: None, parts: [Some(1); 5] },
+        ] {
+            assert_eq!(unpack_locks(pack_locks(&l)), l);
+        }
     }
 
     #[test]
