@@ -50,21 +50,15 @@ fn octave(name: &str) -> IntParam {
     IntParam::new(name, 0, IntRange::Linear { min: -3, max: 3 })
 }
 
+/// Declaration order = the order hosts list the parameters. Ableton's Push shows them in
+/// banks of 8, so bank 1 holds what you play live, bank 2 the setup, bank 3 the rest.
 #[derive(Params)]
 pub struct MomotoneParams {
-    /// Window size, saved with the project. (v2: the window grew with the link row.)
+    /// Window size, saved with the project.
     #[persist = "editor-size-v3"]
     pub editor_state: Arc<EguiState>,
 
-    #[id = "role"]
-    pub role: EnumParam<RoleChoice>,
-    /// Link group 1..4: a follower follows the main of the same group.
-    #[id = "group"]
-    pub group: IntParam,
-    /// The part a follower plays.
-    #[id = "part"]
-    pub part: EnumParam<PartChoice>,
-
+    // ---- Push bank 1: play
     /// Index into `momotone_engine::STYLES`; shown by name in the DAW.
     #[id = "style"]
     pub style: IntParam,
@@ -73,21 +67,21 @@ pub struct MomotoneParams {
     /// Sparse and laid back (0 %) to busy and peak-time (100 %).
     #[id = "energy"]
     pub energy: FloatParam,
-    /// Turn it for a new idea in the same style. Saved with the project, so ideas are recallable.
+    /// The idea number: each one is a different loop in the same style. Saved with the project.
     #[id = "variation"]
     pub variation: IntParam,
     #[id = "bars"]
     pub bars: IntParam,
-
     #[id = "chords"]
     pub chords: BoolParam,
     #[id = "bass"]
     pub bass: BoolParam,
-    #[id = "arp"]
-    pub arp: BoolParam,
     #[id = "melody"]
     pub melody: BoolParam,
 
+    // ---- Push bank 2: parts and routing
+    #[id = "arp"]
+    pub arp: BoolParam,
     /// Per-part octave shift, to fit each machine's sweet spot.
     #[id = "oct_chords"]
     pub oct_chords: IntParam,
@@ -97,11 +91,19 @@ pub struct MomotoneParams {
     pub oct_arp: IntParam,
     #[id = "oct_melody"]
     pub oct_melody: IntParam,
-
-    /// On: chords ch1, bass ch2, arp ch3, melody ch4, so each part drives its own machine.
-    /// Off: everything on channel 1.
+    /// On: chords ch1, bass ch2, arp ch3, melody ch4. Off: everything on channel 1.
     #[id = "split"]
     pub split_channels: BoolParam,
+    #[id = "role"]
+    pub role: EnumParam<RoleChoice>,
+    /// Link group 1..4: a follower follows the main of the same group.
+    #[id = "group"]
+    pub group: IntParam,
+
+    // ---- Push bank 3
+    /// The part a follower plays.
+    #[id = "part"]
+    pub part: EnumParam<PartChoice>,
 }
 
 impl Default for MomotoneParams {
@@ -109,8 +111,8 @@ impl Default for MomotoneParams {
         Self {
             editor_state: EguiState::from_size(crate::editor::WIDTH, crate::editor::HEIGHT),
             role: EnumParam::new("Role", RoleChoice::Main),
-            group: IntParam::new("Link group", 1, IntRange::Linear { min: 1, max: crate::link::GROUPS as i32 }),
-            part: EnumParam::new("Follower part", PartChoice::Bass),
+            group: IntParam::new("Link Group", 1, IntRange::Linear { min: 1, max: crate::link::GROUPS as i32 }),
+            part: EnumParam::new("Plays", PartChoice::Bass),
             style: IntParam::new("Style", index_of("ukg").unwrap_or(0) as i32, IntRange::Linear { min: 0, max: STYLES.len() as i32 - 1 })
                 .with_value_to_string(Arc::new(|v| STYLES[(v.max(0) as usize).min(STYLES.len() - 1)].label.to_string()))
                 .with_string_to_value(Arc::new(|text| {
@@ -122,17 +124,50 @@ impl Default for MomotoneParams {
                 .with_unit(" %")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
-            variation: IntParam::new("Variation", 1, IntRange::Linear { min: 1, max: 500 }),
+            variation: IntParam::new("Idea", 1, IntRange::Linear { min: 1, max: 500 })
+                .with_value_to_string(Arc::new(|v| format!("#{v}")))
+                .with_string_to_value(Arc::new(|t| t.trim().trim_start_matches('#').parse().ok())),
             bars: IntParam::new("Bars", 4, IntRange::Linear { min: 1, max: 8 }),
             chords: BoolParam::new("Chords", true),
             bass: BoolParam::new("Bass", true),
             arp: BoolParam::new("Arp", false),
             melody: BoolParam::new("Melody", true),
-            oct_chords: octave("Chords octave"),
-            oct_bass: octave("Bass octave"),
-            oct_arp: octave("Arp octave"),
-            oct_melody: octave("Melody octave"),
-            split_channels: BoolParam::new("One channel per part", true),
+            oct_chords: octave("Chords Oct"),
+            oct_bass: octave("Bass Oct"),
+            oct_arp: octave("Arp Oct"),
+            oct_melody: octave("Melody Oct"),
+            split_channels: BoolParam::new("Split Ch", true),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the Push shows, bank by bank. Ids never change, so saved sets and automation load.
+    #[test]
+    fn push_banks() {
+        let p = MomotoneParams::default();
+        let ids: Vec<String> = p.param_map().into_iter().map(|(id, _, _)| id).collect();
+        assert_eq!(ids[..8], ["style", "key", "energy", "variation", "bars", "chords", "bass", "melody"]);
+        assert_eq!(ids[8..16], ["arp", "oct_chords", "oct_bass", "oct_arp", "oct_melody", "split", "role", "group"]);
+        assert_eq!(ids[16..], ["part"]);
+    }
+
+    #[test]
+    fn names_fit_the_push_display() {
+        let p = MomotoneParams::default();
+        for (id, ptr, _) in p.param_map() {
+            let name = unsafe { ptr.name() };
+            assert!(name.len() <= 10, "{id}: '{name}' is too long for the Push");
+        }
+    }
+
+    #[test]
+    fn idea_reads_as_a_number() {
+        let p = MomotoneParams::default();
+        assert_eq!(p.variation.to_string(), "#1");
+        assert_eq!(p.variation.string_to_normalized_value("#42").map(|v| p.variation.preview_plain(v)), Some(42));
     }
 }
