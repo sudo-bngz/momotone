@@ -1418,9 +1418,13 @@ dependencies = [
 name = "momotone-plugin"
 version = "0.1.0"
 dependencies = [
+ "midir",
  "momotone-engine",
  "nih_plug",
  "nih_plug_egui",
+ "rtrb",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

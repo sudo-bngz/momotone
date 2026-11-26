@@ -598,3 +598,30 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use crate::pitch::PitchClass;
+    use crate::rng::Rng;
+    use crate::style::STYLES;
+
+    /// Every bar length the plugin allows, random energies and ideas: never panics, notes
+    /// stay inside the loop.
+    #[test]
+    fn any_setting_renders() {
+        let mut rng = Rng::new(99);
+        for _ in 0..6000 {
+            let style = &STYLES[rng.range(0, STYLES.len() as i32 - 1) as usize];
+            let root = PitchClass::ALL[rng.range(0, 11) as usize];
+            let bars = rng.range(1, 16) as u32;
+            let energy = rng.f64();
+            let seed = rng.range(0, 70_000) as u64;
+            let plan = style.plan(root, bars, energy, seed);
+            let p = generate(&plan, Layers::all(), seed);
+            for n in &p.notes {
+                assert!(n.start >= 0.0 && n.start + n.length <= p.length_beats + 1e-6, "{} bars {bars}", style.id);
+            }
+        }
+    }
+}

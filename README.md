@@ -66,9 +66,23 @@ The parameters are ordered for Ableton's Push, which shows a device 8 at a time.
 
 New settings come in on the next bar line, like launching a clip, so you can turn encoders while it plays.
 
-## Studio workflow (Ableton Live + Push + hardware)
+## Hardware out: one Momotone for all your machines
 
-One **Main** Momotone is where you play: style, key, energy, ideas. Each other part gets a small **Follower** Momotone that plays just that part of the main's loop, in sync, so every synth or machine gets its own track. Live can't split MIDI channels between tracks, which is why followers exist.
+Each part can skip the DAW and go **straight to a MIDI port**: pick it in the part's **OUT** menu, then its channel and a latency offset. One Momotone then drives every machine, with no followers and no MIDI From routing.
+
+1. In the Momotone window, set e.g. **Bass → OUT: your MIDI interface (or the MS-1's USB port), CH 1**, **Chords → Prophet, CH 1**…
+2. In Live, add an **audio track** per machine (Audio From = the input it's plugged into) to hear and record it.
+3. Press play. Parts set to a port leave Momotone's DAW output; the others still go through Live as before.
+
+**Latency offset (ms).** Momotone sends hardware notes at the moment Live *computes* the audio, which is a little before you *hear* Live's own sounds. If a machine sounds early against Live's drums, raise its offset towards Live's output latency (Settings → Audio, "Overall Latency"); if it sounds late (slow attack, MIDI chain), lower it. Offsets go from −100 to +250 ms, per part.
+
+Port, channel and offset are saved with your Live set. When a part is re-routed, playback stops, or Momotone is removed, the machines get "all notes off", so nothing hangs.
+
+Timing is scheduled from Live's sample clock and sent by a dedicated thread with about 1 ms precision. Works with CoreMIDI (macOS), Windows MIDI and ALSA (Linux).
+
+## Studio workflow with followers (software synths in Live)
+
+For **hardware**, use [Hardware out](#hardware-out-one-momotone-for-all-your-machines) above. For **software synths** inside Live, one **Main** Momotone is where you play: style, key, energy, ideas. Each other part gets a small **Follower** Momotone that plays just that part of the main's loop, in sync, so every synth or machine gets its own track. Live can't split MIDI channels between tracks, which is why followers exist.
 
 ![Follower](docs/momotone-follower.png)
 
@@ -157,7 +171,8 @@ UK garage bass     "0..3..1.....2.4.0..3..1...5.2..7"   (2 bars)
 - [ ] Drag a part from the plugin straight onto a DAW track (native OS drag, macOS first)
 - [ ] AI prompt box (LLM call from a background thread)
 - [ ] Lock a part or a bar you like and regenerate the rest
-- [ ] Per-part MIDI channel and velocity curves, humanize
+- [x] Direct hardware MIDI out per part (port, channel, latency offset)
+- [ ] Velocity curves, humanize
 - [ ] Drum part (kick/snare/hats grids per style) for drum machines
 - [ ] Follow mode: play a note on the Push to set the key live
 
