@@ -56,8 +56,12 @@ fn octave(name: &str) -> IntParam {
 #[derive(Params)]
 pub struct MomotoneParams {
     /// Window size, saved with the project.
-    #[persist = "editor-size-v5"]
+    #[persist = "editor-size-v6"]
     pub editor_state: Arc<EguiState>,
+
+    /// The chord progression from the AI prompt, if any, saved with the project.
+    #[persist = "ai-harmony"]
+    pub ai: Arc<RwLock<Option<crate::ai::AiHarmony>>>,
 
     /// Locked parts and harmony, saved with the project.
     #[persist = "locks"]
@@ -124,6 +128,7 @@ impl Default for MomotoneParams {
             editor_state: EguiState::from_size(crate::editor::WIDTH, crate::editor::HEIGHT),
             hw: Arc::new(RwLock::new(crate::hwout::HwConfig::default())),
             locks: Arc::new(RwLock::new(crate::Locks::default())),
+            ai: Arc::new(RwLock::new(None)),
             role: EnumParam::new("Role", RoleChoice::Main),
             group: IntParam::new("Link Group", 1, IntRange::Linear { min: 1, max: crate::link::GROUPS as i32 }),
             part: EnumParam::new("Plays", PartChoice::Bass),
@@ -133,6 +138,7 @@ impl Default for MomotoneParams {
                     let t = text.trim();
                     STYLES.iter().position(|s| s.id == t || s.label.eq_ignore_ascii_case(t)).map(|i| i as i32)
                 })),
+
             key: EnumParam::new("Key", KeyChoice::A),
             energy: FloatParam::new("Energy", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_unit(" %")

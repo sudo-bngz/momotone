@@ -5,6 +5,7 @@
 //! part's octave. Everything goes through the plugin's parameters, so the DAW records and
 //! recalls it and the Push can drive the same controls.
 
+use crate::ai;
 use crate::hwout::{self, HwState};
 use crate::link;
 use crate::params::{KeyChoice, MomotoneParams, PartChoice, RoleChoice};
@@ -23,7 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const WIDTH: u32 = 1020;
-pub const HEIGHT: u32 = 610;
+pub const HEIGHT: u32 = 656;
 
 const BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
 const PANEL: Color32 = Color32::from_rgb(0x07, 0x07, 0x07);
@@ -84,6 +85,23 @@ struct EditorData {
     status: Option<(String, bool)>,
     last_export: Option<PathBuf>,
     ports: PortCache,
+    ask: AskUi,
+}
+
+/// Where the background request drops Claude's answer.
+type AiReply = Arc<std::sync::Mutex<Option<Result<momotone_engine::PatternSpec, String>>>>;
+
+/// The AI prompt box.
+#[derive(Default)]
+struct AskUi {
+    prompt: String,
+    key_input: String,
+    editing_key: bool,
+    /// Whether a key is configured (file or env), read once and after saving.
+    has_key: Option<bool>,
+    /// The prompt being answered, and where the answer lands.
+    pending: Option<(String, AiReply)>,
+    status: Option<(String, bool)>,
 }
 
 /// MIDI output ports, listed again at most every 2 s while a menu is open.
@@ -190,6 +208,7 @@ fn octaves(params: &MomotoneParams) -> [i32; Layer::COUNT] {
 fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params: &MomotoneParams, shared: &UiShared, hw: &HwState) {
     let follower = params.role.value() == RoleChoice::Follower;
     let group = (params.group.value() - 1).max(0) as usize;
+    ai::register_own(&params.ai);
     let part = params.part.value();
     // A follower shows its group's main; a main shows itself.
     let view = if follower {
@@ -244,6 +263,9 @@ fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params
             return;
         };
 
+        if !follower {
+            ask_row(ui, setter, params, &mut data.ask);
+        }
         ui.add_space(4.0);
         if follower {
             follower_body(ui, setter, data, params, &plan, &pattern, &settings, part, shared, hw);
@@ -386,6 +408,135 @@ fn link_selectors(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, fo
                     }
                 });
         });
+    }
+}
+
+// ------------------------------------------------------------------ AI prompt
+
+fn ask_row(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, a: &mut AskUi) {
+    let has_key = *a
+        .has_key
+        .get_or_insert_with(|| ai::load_config().api_key.is_some());
+
+    // An answer came back: set the style, key, energy, bars and the progression.
+    if let Some((prompt, slot)) = &a.pending {
+        let done = slot.lock().ok().and_then(|mut s| s.take());
+        if let Some(result) = done {
+            let prompt = prompt.clone();
+            a.pending = None;
+            a.status = Some(
+                match result.and_then(|spec| ai::to_applied(&prompt, &spec)) {
+                    Ok(applied) => {
+                        set(setter, &params.style, applied.style as i32);
+                        set(setter, &params.key, KeyChoice::from_index(applied.key));
+                        if let Some(e) = applied.energy {
+                            set(setter, &params.energy, e);
+                        }
+                        if let Some(b) = applied.bars {
+                            set(setter, &params.bars, b);
+                        }
+                        ai::register(&applied.harmony);
+                        let n = applied.harmony.progression.len();
+                        if let Ok(mut h) = params.ai.write() {
+                            *h = Some(applied.harmony);
+                        }
+                        (
+                            format!("done // {} · {n} chords", STYLES[applied.style].label),
+                            true,
+                        )
+                    }
+                    Err(e) => (e, false),
+                },
+            );
+        } else {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (r, _) = ui.allocate_exact_size(vec2(58.0, 26.0), Sense::hover());
+        ui.painter().text(
+            r.left_center(),
+            Align2::LEFT_CENTER,
+            "ASK AI",
+            mono(11.0),
+            DIM,
+        );
+
+        if !has_key || a.editing_key {
+            let edit = egui::TextEdit::singleline(&mut a.key_input)
+                .password(true)
+                .hint_text(RichText::new("paste your Claude API key (sk-ant-...)").color(FAINT))
+                .font(mono(13.0))
+                .desired_width(340.0);
+            let resp = ui.add(edit);
+            let save = btn(ui, "save key", true, MINT, 0.0).clicked()
+                || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            if save && !a.key_input.trim().is_empty() {
+                a.status = Some(match ai::save_api_key(&a.key_input) {
+                    Ok(_) => ("key saved on this computer (not in your set)".into(), true),
+                    Err(e) => (format!("couldn't save the key: {e}"), false),
+                });
+                a.key_input.clear();
+                a.editing_key = false;
+                a.has_key = None;
+            }
+            if has_key && btn(ui, "cancel", false, MINT, 0.0).clicked() {
+                a.editing_key = false;
+            }
+            if !has_key {
+                ui.label(caps("get one at platform.claude.com", 10.0, FAINT));
+            }
+        } else {
+            let busy = a.pending.is_some();
+            let field = egui::TextEdit::singleline(&mut a.prompt)
+                .hint_text(
+                    RichText::new("describe a vibe: dark rolling dub techno, a bit hypnotic")
+                        .color(FAINT),
+                )
+                .font(mono(13.0))
+                .desired_width(ui.available_width() - 190.0);
+            let resp = ui.add_enabled(!busy, field);
+            let go = btn(
+                ui,
+                if busy { "thinking..." } else { "ask" },
+                !busy,
+                MINT,
+                84.0,
+            )
+            .clicked()
+                || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            if go && !busy && !a.prompt.trim().is_empty() {
+                let prompt = a.prompt.trim().to_string();
+                let slot = Arc::new(std::sync::Mutex::new(None));
+                let out = slot.clone();
+                let ctx = ui.ctx().clone();
+                let asked = prompt.clone();
+                std::thread::spawn(move || {
+                    let result = ai::ask(&ai::load_config(), &asked);
+                    if let Ok(mut s) = out.lock() {
+                        *s = Some(result);
+                    }
+                    ctx.request_repaint();
+                });
+                a.pending = Some((prompt, slot));
+                a.status = Some(("asking claude...".into(), true));
+            }
+            if btn(ui, "key", false, MINT, 0.0)
+                .on_hover_text("Change the Claude API key")
+                .clicked()
+            {
+                a.editing_key = true;
+            }
+        }
+    });
+    if let Some((msg, ok)) = &a.status {
+        ui.label(
+            RichText::new(msg)
+                .font(mono(11.0))
+                .color(if *ok { MINT } else { WARN }),
+        );
     }
 }
 
@@ -578,6 +729,18 @@ fn main_body(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(caps("chords", 11.0, DIM));
+                if settings.ai != 0 {
+                    ui.label(caps("ai harmony", 10.0, MINT));
+                    if btn(ui, "back to style chords", false, MINT, 0.0)
+                        .on_hover_text("Forget the AI progression and go back to the style's own chords")
+                        .clicked()
+                    {
+                        if let Ok(mut a) = params.ai.write() {
+                            *a = None;
+                        }
+                    }
+                    return;
+                }
                 let locked = settings.locks.harmony.is_some();
                 let hint = if locked {
                     format!("Harmony locked to idea #{}: new ideas keep these chords. Click to unlock", settings.harmony_seed())
@@ -593,7 +756,16 @@ fn main_body(
                 }
             });
             chord_strip(ui, plan, data, shared);
-            ui.label(RichText::new(plan.style.blurb).font(mono(11.0)).color(DIM));
+            match ai::lookup(settings.ai) {
+                Some(h) => {
+                    let tempo = h.tempo.map(|t| format!(" · suggested tempo {t:.0} bpm")).unwrap_or_default();
+                    let why = h.explanation.clone().unwrap_or_default();
+                    ui.label(RichText::new(format!("ai // \"{}\" → {why}{tempo}", h.prompt)).font(mono(11.0)).color(MINT));
+                }
+                None => {
+                    ui.label(RichText::new(plan.style.blurb).font(mono(11.0)).color(DIM));
+                }
+            }
         });
     });
 
