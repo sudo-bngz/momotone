@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/momotone-engine", "crates/momotone-plugin", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Nicolas Bounoughaz"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/sudo-bngz/momotone"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"
