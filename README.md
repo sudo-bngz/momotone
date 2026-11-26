@@ -116,7 +116,7 @@ The parameters are ordered for Ableton's Push, which shows a device 8 at a time.
 | Style | One of the 36 styles above: harmony, grooves and swing (shown by name) |
 | Key | Root note. The style picks the scale |
 | Energy | 0 % sparse and laid back → 100 % busy and peak-time. Only adds or removes ghost notes and fills; the core groove never moves |
-| Idea | #1..#500. Each number is a different loop in the style. Saved with your project, so you can always get it back |
+| Idea | #1..#500. Each number is a different loop in the style: its own chord progression, chord rhythm, bassline, melody, arp and drums. Saved with your project, so you can always get it back |
 | Section | Loop, Intro, Groove, Build, Drop, Break, Outro, or Song (see Song mode) |
 | Bars | Loop length, 1..8 |
 | Chords / Bass / Arp / Melody / Drums | Turn parts on or off. Muting one never changes the others. Drums are off by default |
@@ -223,6 +223,8 @@ UK garage bass     "0..3..1.....2.4.0..3..1...5.2..7"   (2 bars)
 ```
 
 `.` is a rest; a digit is a hit that plays when Energy × 10 ≥ that digit. `0` is the core groove; higher digits are ghost notes and fills. Swing pushes the off-beat 16ths late. Adding a genre means writing a few of these lines.
+
+**Ideas.** About 4 ideas in 10 keep one of the style's own progressions, 2 in 10 swap a chord in it, and the rest get a fresh progression built from the chords of the mode: home chord first, a chord that leads back home last, so it always loops naturally and stays in the key. Each part's rhythm is then varied the way a player would: optional hits move or drop out, new syncopations come in, the chord rhythm can shift against the beat, the bass plays other chord tones on the off-beats, notes get shorter or longer. The core hits stay, so a style still sounds like itself, and Energy still only adds notes.
 
 **Melody.** A one-bar motif is picked from the style's melody positions, then stated, answered with a varied contour, contrasted, and resolved home on the last bar. Notes on beats 1 and 3 are always chord tones, and over borrowed chords the clashing scale notes are swapped for the chord's own.
 

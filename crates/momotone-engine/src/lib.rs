@@ -12,6 +12,7 @@ pub mod chord;
 pub mod explain;
 pub mod generate;
 pub mod grid;
+pub mod harmony;
 pub mod midi;
 pub mod pitch;
 pub mod plan;
