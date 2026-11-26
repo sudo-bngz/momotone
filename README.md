@@ -44,15 +44,15 @@ Click the **padlock** next to a part to keep it while you browse ideas: *New ide
 - **Lock the bass and the harmony** to keep the bass exactly as it is, note for note, while everything else changes.
 - The counter under *New idea* shows how many things are locked; **Unlock** frees them all. Locks are saved with your Live set, and followers play the main's locked parts too.
 
-## Ask AI: describe a vibe
+## Ask AI (optional): describe a vibe
 
-Type what you hear in your head in the **Ask AI** box and press Enter: *"dark rolling dub techno, a bit hypnotic"*, *"rainy-night garage, a bit soulful"*, *"acid at 4am"*. Claude picks the **style, key, bars and energy**, writes a **chord progression** for it, and the line under the chords says why (and which tempo it suggests).
+Optional, and out of the way until you want it: click **AI** at the top right, type what you hear in your head and press Enter: *"dark rolling dub techno, a bit hypnotic"*, *"rainy-night garage, a bit soulful"*, *"acid at 4am"*. Claude picks the **style, key, bars and energy**, writes a **chord progression** for it, and the line under the chords says why (and which tempo it suggests).
 
 - The chords Claude wrote replace the style's own: the header shows **AI HARMONY**. *New idea* and the parts still work as usual (grooves, bass, melody come from the style). **Back to style chords** returns to the style's progressions.
 - The AI harmony is saved with your Live set, and followers play it too.
 - Claude never writes notes, only a small JSON spec that the engine checks; a reply that isn't usable music is refused, so you always get a playable loop.
 
-**API key.** Ask AI calls the Claude API with your own key (create one at [console.anthropic.com](https://console.anthropic.com)). The first time, the box asks for it; click **key** later to change it. It's stored only on your computer, readable only by you:
+**API key.** Ask AI calls the Claude API with your own key (create one at [console.anthropic.com](https://console.anthropic.com)). Without a key Momotone works exactly the same, the AI panel just asks for one; paste it there the first time, and click **key** later to change it. It's stored only on your computer, readable only by you:
 
 | OS | file |
 |---|---|
@@ -70,7 +70,7 @@ The `ANTHROPIC_API_KEY` environment variable overrides the file. The default mod
 - **Energy** knob: *laid back* → *peak time*. **Idea** knob: browse ideas; ◀ ▶ step one by one, **New idea** jumps to a random one. Knobs: drag up/down, Shift for fine, double-click to reset.
 - **Chords**: hover a chord to read what it does; the one playing is outlined in mint.
 - **Parts**: click the name to switch a part on/off, small knob = octave, then its notes with the playhead.
-- **Ask AI**: describe a vibe, Claude sets everything (see above).
+- **AI** (top right, optional): opens the Ask AI panel; Escape or a click outside closes it.
 - **Role / Group**: main or follower (see the workflow below).
 - **Export MIDI loop**: writes a folder to `~/Music/Momotone/` (style, key, tempo, energy, idea) with one `.mid` per part plus `All parts.mid`. Add that folder to Live's *Places* once and every export shows up in the browser.
 
