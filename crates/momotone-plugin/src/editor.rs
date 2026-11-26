@@ -4,7 +4,8 @@
 //! Everything here goes through the plugin's parameters, so the DAW records and recalls it,
 //! and the Push can still drive the same controls.
 
-use crate::params::{KeyChoice, MomotoneParams, StyleChoice};
+use crate::link;
+use crate::params::{KeyChoice, MomotoneParams, PartChoice, RoleChoice, StyleChoice};
 use crate::{plan_for, settings_from, GenSettings, UiShared};
 use momotone_engine::{explain, generate, midi, Layer, Layers, Pattern, PitchClass, Plan, STYLES};
 use nih_plug::prelude::*;
@@ -17,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub const WIDTH: u32 = 940;
-pub const HEIGHT: u32 = 730;
+pub const HEIGHT: u32 = 790;
 
 const BG: Color32 = Color32::from_rgb(0x15, 0x12, 0x10);
 const PANEL: Color32 = Color32::from_rgb(0x23, 0x1e, 0x1a);
@@ -84,24 +85,63 @@ fn part_params(params: &MomotoneParams, layer: Layer) -> (&BoolParam, &IntParam)
 }
 
 fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params: &MomotoneParams, shared: &UiShared) {
-    let settings = settings_from(params);
-    if data.cache.as_ref().map(|c| c.0) != Some(settings) {
-        let plan = plan_for(&settings);
-        let pattern = generate(&plan, Layers::all(), settings.seed);
-        data.selected_chord = data.selected_chord.min(plan.progression.len() - 1);
-        data.cache = Some((settings, plan, pattern));
+    let follower = params.role.value() == RoleChoice::Follower;
+    let group = (params.group.value() - 1).max(0) as usize;
+    let part = params.part.value();
+    // A follower shows its group's main; a main shows itself.
+    let view = if follower {
+        link::read(group).map(|(s, _)| GenSettings { layers: link::part_layers(part.layer()), ..s })
+    } else {
+        Some(settings_from(params))
+    };
+    if let Some(settings) = view {
+        if data.cache.as_ref().map(|c| c.0) != Some(settings) {
+            let plan = plan_for(&settings);
+            let pattern = generate(&plan, Layers::all(), settings.seed);
+            data.selected_chord = data.selected_chord.min(plan.progression.len() - 1);
+            data.cache = Some((settings, plan, pattern));
+        }
     }
-    let (_, plan, pattern) = data.cache.clone().expect("rendered above");
-    let playing = shared.playing();
-    if playing {
+    if shared.playing() || follower {
         ctx.request_repaint();
     }
 
     let frame = egui::Frame::NONE.fill(BG).inner_margin(egui::Margin::symmetric(22, 18));
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-        header(ui, &plan, shared);
-        ui.add_space(4.0);
+        let tempo_hint = data.cache.as_ref().map_or(120.0, |c| c.1.tempo);
+        header(ui, tempo_hint, shared);
+        link_row(ui, setter, params, follower, group, part);
+        if shared.conflict() {
+            ui.label(
+                RichText::new(format!(
+                    "Another Momotone is also Main in group {}: give this one another group, or make it a Follower.",
+                    group + 1
+                ))
+                .size(13.0)
+                .color(Color32::from_rgb(0xe8, 0x5d, 0x5a)),
+            );
+        }
+        ui.add_space(2.0);
+
+        let (settings, plan, pattern) = match (view, data.cache.clone()) {
+            (Some(_), Some(c)) => c,
+            _ => {
+                ui.add_space(30.0);
+                ui.label(RichText::new(format!("No main Momotone in group {} yet.", group + 1)).size(18.0));
+                ui.label(
+                    RichText::new("Set one Momotone to Main in this group: this one will then play its part.")
+                        .size(13.0)
+                        .color(DIM),
+                );
+                return;
+            }
+        };
+
+        if follower {
+            follower_body(ui, setter, data, params, &plan, &pattern, &settings, part, shared);
+            return;
+        }
 
         section(ui, "STYLE");
         ui.horizontal_wrapped(|ui| {
@@ -172,7 +212,7 @@ fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params
             });
         });
         for layer in Layer::ALL {
-            part_lane(ui, setter, params, &pattern, layer, shared);
+            part_lane(ui, setter, params, &pattern, layer, shared, false);
         }
 
         ui.add_space(6.0);
@@ -180,11 +220,93 @@ fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params
     });
 }
 
+fn link_row(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, follower: bool, group: usize, part: PartChoice) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        section(ui, "ROLE ");
+        if pill(ui, "Main", !follower, ACCENT, 70.0).on_hover_text("This Momotone is the one you play with").clicked() {
+            set(setter, &params.role, RoleChoice::Main);
+        }
+        if pill(ui, "Follower", follower, LIVE, 90.0)
+            .on_hover_text("Plays one part of the main Momotone of its group")
+            .clicked()
+        {
+            set(setter, &params.role, RoleChoice::Follower);
+        }
+        ui.add_space(14.0);
+        section(ui, "GROUP ");
+        for g in 1..=link::GROUPS as i32 {
+            let on = g as usize == group + 1;
+            if pill(ui, &g.to_string(), on, if follower { LIVE } else { ACCENT }, 30.0).clicked() {
+                set(setter, &params.group, g);
+            }
+        }
+        if follower {
+            ui.add_space(14.0);
+            section(ui, "PLAYS ");
+            for (i, l) in Layer::ALL.into_iter().enumerate() {
+                if pill(ui, l.name(), part.layer() == l, part_color(l), 0.0).clicked() {
+                    set(setter, &params.part, PartChoice::from_index(i));
+                }
+            }
+        }
+    });
+}
+
+/// A follower's screen: what the main plays, the chords, and its one part.
+#[allow(clippy::too_many_arguments)]
+fn follower_body(
+    ui: &mut Ui,
+    setter: &ParamSetter,
+    data: &mut EditorData,
+    params: &MomotoneParams,
+    plan: &Plan,
+    pattern: &Pattern,
+    settings: &GenSettings,
+    part: PartChoice,
+    shared: &UiShared,
+) {
+    ui.add_space(6.0);
+    let key = plan.key.root.name(plan.key.prefers_flats());
+    ui.label(
+        RichText::new(format!(
+            "Following group {}:  {} · {} {} · {} bars · energy {} % · idea #{}",
+            params.group.value(),
+            plan.style.label,
+            key,
+            plan.key.mode.name(),
+            plan.bars,
+            settings.energy,
+            settings.seed
+        ))
+        .size(15.0),
+    );
+    ui.label(
+        RichText::new(format!(
+            "Style, key, energy and ideas are set on the main Momotone. This one plays the {}.",
+            part.layer().name().to_lowercase()
+        ))
+        .size(12.0)
+        .color(DIM),
+    );
+    ui.add_space(6.0);
+    section(ui, "CHORDS");
+    chord_strip(ui, plan, data, shared);
+    if let Some(chord) = plan.progression.get(data.selected_chord) {
+        ui.label(RichText::new(explain::chord_line(plan, chord)).size(13.0));
+    }
+    ui.add_space(6.0);
+    section(ui, "PART");
+    part_lane(ui, setter, params, pattern, part.layer(), shared, true);
+    ui.add_space(6.0);
+    footer(ui, data, plan, pattern, settings, params, shared);
+}
+
 fn section(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).size(11.0).strong().color(DIM));
 }
 
-fn header(ui: &mut Ui, plan: &Plan, shared: &UiShared) {
+fn header(ui: &mut Ui, tempo_hint: f64, shared: &UiShared) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("MOMOTONE").size(26.0).strong().color(TEXT));
         ui.label(RichText::new("by Momo's Basement").size(13.0).color(DIM));
@@ -197,7 +319,7 @@ fn header(ui: &mut Ui, plan: &Plan, shared: &UiShared) {
             ui.label(RichText::new(text).size(12.0).color(dot));
             let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
             ui.painter().circle_filled(r.center(), 4.0, dot);
-            let tempo = shared.tempo().unwrap_or(plan.tempo);
+            let tempo = shared.tempo().unwrap_or(tempo_hint);
             ui.label(RichText::new(format!("{:.0} bpm   ", tempo)).size(12.0).color(DIM));
         });
     });
@@ -335,16 +457,25 @@ fn chord_strip(ui: &mut Ui, plan: &Plan, data: &mut EditorData, shared: &UiShare
     resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Click a chord to see what it does");
 }
 
-fn part_lane(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, pattern: &Pattern, layer: Layer, shared: &UiShared) {
+fn part_lane(
+    ui: &mut Ui,
+    setter: &ParamSetter,
+    params: &MomotoneParams,
+    pattern: &Pattern,
+    layer: Layer,
+    shared: &UiShared,
+    follower: bool,
+) {
     let (enabled, octave) = part_params(params, layer);
-    let on = enabled.value();
+    // A follower always plays its part; the on/off switches belong to the main.
+    let on = follower || enabled.value();
     let color = part_color(layer);
     let channel = if params.split_channels.value() { layer.channel() + 1 } else { 1 };
 
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(vec2(LEFT_W, LANE_H), Layout::left_to_right(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            if pill(ui, layer.name(), on, color, 74.0).on_hover_text("Turn this part on or off").clicked() {
+            if pill(ui, layer.name(), on, color, 74.0).on_hover_text("Turn this part on or off").clicked() && !follower {
                 set(setter, enabled, !on);
             }
             ui.label(RichText::new(format!("ch {channel}")).size(11.0).color(DIM));

@@ -39,6 +39,9 @@ No DAW at hand? `cargo run --release -p momotone-plugin --features standalone` o
 
 | Parameter | What it does |
 |---|---|
+| Role | **Main** (you play it) or **Follower** (plays one part of its group's main) |
+| Link group | 1..4: a follower follows the main of the same group |
+| Follower part | The part a follower plays: Chords, Bass, Arp or Melody |
 | Style | One of the styles above: harmony, grooves and swing |
 | Key | Root note. The style picks the scale |
 | Energy | 0 % sparse and laid back → 100 % busy and peak-time. It only adds or removes ghost notes and fills; the core groove never moves |
@@ -46,23 +49,27 @@ No DAW at hand? `cargo run --release -p momotone-plugin --features standalone` o
 | Bars | Loop length, 1..8 |
 | Chords / Bass / Arp / Melody | Turn parts on or off. Muting one never changes the others |
 | *Part* octave | Shift each part ±3 octaves to fit each machine's range |
-| One channel per part | On (default): chords ch 1, bass ch 2, arp ch 3, melody ch 4. Off: everything on ch 1 |
+| One channel per part | On (default): chords ch 1, bass ch 2, arp ch 3, melody ch 4. Off: everything on ch 1. Useful in hosts that can split channels (Bitwig, Reaper); in Live, use followers |
 
 New settings come in on the next bar line, like launching a clip, so you can tweak while it plays.
 
 ## Studio workflow (Ableton Live + Push + hardware)
 
-Live loads VST plugins as instruments, not MIDI effects, so Momotone sits on its own track and the other tracks listen to it:
+One **Main** Momotone is where you play: style, key, energy, ideas. Each other part gets a small **Follower** Momotone that plays just that part of the main's loop, in sync, so every synth or machine gets its own track. Live can't split MIDI channels between tracks, which is why followers exist.
 
-1. **Momotone track**: a MIDI track with Momotone on it.
-2. **One track per machine** (for example Bass → MS-1, Chords → Prophet, Melody → another synth):
-   - *MIDI From*: the Momotone track, second dropdown: the part's channel (Ch. 2 for bass…).
-   - *Monitor*: **In**.
-   - Device: Live's **External Instrument**, set to that machine's MIDI output, channel and audio return.
-3. Press play, find a loop you like with Style / Energy / Variation (map them to Push encoders: they're automatable parameters).
-4. **Record the audio** of each machine into clips, then play those clips from the Push.
+![Follower](docs/momotone-follower.png)
 
-To keep the MIDI instead, arm the machine tracks and record MIDI clips; you can drag a `.mid` from the CLI below too.
+1. **Main track**: a MIDI track with Momotone. Leave it on **Main**, group **1**.
+2. **One follower track per part** (for example Bass → MS-1, Chords → Prophet):
+   - a MIDI track with Momotone, set to **Follower**, group **1**, and **Plays: Bass** (or Chords, Arp, Melody);
+   - a second MIDI track for the sound: *MIDI From* = the follower track, then **Momotone**; *Monitor* = **In**; device = your synth, or Live's **External Instrument** pointing at the machine's MIDI port and audio return.
+3. Press play and find a loop on the main (map Style / Energy / Variation to Push encoders). Followers change on the same bar as the main.
+4. **Record the audio** of each machine into clips, then play them from the Push.
+
+The main can play parts too (its own Chords / Bass / Arp / Melody switches), so a minimal setup is: main → chords synth, one follower → bass machine.
+Use groups 2–4 to run separate Momotone setups in the same set. Only one Main per group: the screen warns you if there are two.
+
+Prefer files? **Export MIDI loop** writes one `.mid` per part; drag them onto the tracks or Push clip slots.
 
 In Bitwig or Reaper you can also put Momotone directly in front of a synth on the same track.
 

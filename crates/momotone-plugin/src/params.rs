@@ -29,6 +29,28 @@ impl StyleChoice {
     }
 }
 
+/// Main: the instance you play with. Follower: plays one part of its group's main.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum RoleChoice {
+    Main,
+    Follower,
+}
+
+/// Must stay in the same order as `momotone_engine::Layer::ALL`.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum PartChoice {
+    Chords,
+    Bass,
+    Arp,
+    Melody,
+}
+
+impl PartChoice {
+    pub fn layer(self) -> momotone_engine::Layer {
+        momotone_engine::Layer::ALL[self as usize]
+    }
+}
+
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum KeyChoice {
     C,
@@ -56,9 +78,18 @@ fn octave(name: &str) -> IntParam {
 
 #[derive(Params)]
 pub struct MomotoneParams {
-    /// Window size, saved with the project.
-    #[persist = "editor-state"]
+    /// Window size, saved with the project. (v2: the window grew with the link row.)
+    #[persist = "editor-size-v2"]
     pub editor_state: Arc<EguiState>,
+
+    #[id = "role"]
+    pub role: EnumParam<RoleChoice>,
+    /// Link group 1..4: a follower follows the main of the same group.
+    #[id = "group"]
+    pub group: IntParam,
+    /// The part a follower plays.
+    #[id = "part"]
+    pub part: EnumParam<PartChoice>,
 
     #[id = "style"]
     pub style: EnumParam<StyleChoice>,
@@ -102,6 +133,9 @@ impl Default for MomotoneParams {
     fn default() -> Self {
         Self {
             editor_state: EguiState::from_size(crate::editor::WIDTH, crate::editor::HEIGHT),
+            role: EnumParam::new("Role", RoleChoice::Main),
+            group: IntParam::new("Link group", 1, IntRange::Linear { min: 1, max: crate::link::GROUPS as i32 }),
+            part: EnumParam::new("Follower part", PartChoice::Bass),
             style: EnumParam::new("Style", StyleChoice::Ukg),
             key: EnumParam::new("Key", KeyChoice::A),
             energy: FloatParam::new("Energy", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
