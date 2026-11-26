@@ -13,3 +13,13 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 momotone-engine = { path = "../momotone-engine" }
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+
+[features]
+# Standalone app (no DAW), handy to try the UI: cargo run -p momotone-plugin --features standalone
+standalone = ["nih_plug/standalone"]
+
+[[bin]]
+name = "momotone-standalone"
+path = "src/main.rs"
+required-features = ["standalone"]

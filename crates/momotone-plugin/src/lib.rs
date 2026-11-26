@@ -9,12 +9,13 @@
 //!   thread swaps it in on the next bar line, so changes land in time like a Push clip
 //!   launch. The previous pattern is left in the slot and freed by the next background run.
 
-use momotone_engine::{generate, Layers, Pattern, PitchClass, STYLES};
+use momotone_engine::{generate, Layers, Pattern, PitchClass, Plan, STYLES};
 use nih_plug::prelude::*;
 use std::num::NonZeroU32;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+mod editor;
 mod params;
 mod player;
 use params::MomotoneParams;
@@ -32,10 +33,50 @@ pub struct GenSettings {
     pub layers: Layers,
 }
 
-pub fn render(s: &GenSettings) -> Pattern {
+pub fn plan_for(s: &GenSettings) -> Plan {
     let style = &STYLES[s.style.min(STYLES.len() - 1)];
-    let plan = style.plan(PitchClass::ALL[s.key % 12], s.bars, s.energy as f64 / 100.0, s.seed);
-    generate(&plan, s.layers, s.seed)
+    style.plan(PitchClass::ALL[s.key % 12], s.bars, s.energy as f64 / 100.0, s.seed)
+}
+
+pub fn render(s: &GenSettings) -> Pattern {
+    generate(&plan_for(s), s.layers, s.seed)
+}
+
+/// Reads the parameters that shape the music. Used by the audio thread and the editor,
+/// so both always see the very same pattern.
+pub fn settings_from(p: &MomotoneParams) -> GenSettings {
+    GenSettings {
+        style: p.style.value().index(),
+        key: p.key.value() as usize,
+        bars: p.bars.value() as u32,
+        seed: p.variation.value() as u64,
+        energy: (p.energy.value() * 100.0).round().clamp(0.0, 100.0) as u8,
+        layers: Layers { chords: p.chords.value(), bass: p.bass.value(), arp: p.arp.value(), melody: p.melody.value() },
+    }
+}
+
+/// Transport info published by the audio thread for the editor (playhead, tempo).
+#[derive(Default)]
+pub struct UiShared {
+    beat: AtomicU64,
+    tempo: AtomicU64,
+    playing: AtomicBool,
+}
+
+impl UiShared {
+    pub fn beat(&self) -> f64 {
+        f64::from_bits(self.beat.load(Ordering::Relaxed))
+    }
+
+    /// Host tempo, if the host has told us.
+    pub fn tempo(&self) -> Option<f64> {
+        let t = f64::from_bits(self.tempo.load(Ordering::Relaxed));
+        (t > 0.0).then_some(t)
+    }
+
+    pub fn playing(&self) -> bool {
+        self.playing.load(Ordering::Relaxed)
+    }
 }
 
 #[derive(Default)]
@@ -47,6 +88,7 @@ struct Shared {
 pub struct Momotone {
     params: Arc<MomotoneParams>,
     shared: Arc<Shared>,
+    ui: Arc<UiShared>,
     pattern: Pattern,
     requested: Option<GenSettings>,
     sample_rate: f64,
@@ -58,6 +100,7 @@ impl Default for Momotone {
         Self {
             params: Arc::new(MomotoneParams::default()),
             shared: Arc::new(Shared::default()),
+            ui: Arc::new(UiShared::default()),
             pattern: Pattern::default(),
             requested: None,
             sample_rate: 44_100.0,
@@ -68,20 +111,7 @@ impl Default for Momotone {
 
 impl Momotone {
     fn settings(&self) -> GenSettings {
-        let p = &self.params;
-        GenSettings {
-            style: p.style.value().index(),
-            key: p.key.value() as usize,
-            bars: p.bars.value() as u32,
-            seed: p.variation.value() as u64,
-            energy: (p.energy.value() * 100.0).round().clamp(0.0, 100.0) as u8,
-            layers: Layers {
-                chords: p.chords.value(),
-                bass: p.bass.value(),
-                arp: p.arp.value(),
-                melody: p.melody.value(),
-            },
-        }
+        settings_from(&self.params)
     }
 
     /// Takes a freshly rendered pattern if one is ready. Returns true if it changed.
@@ -136,6 +166,10 @@ impl Plugin for Momotone {
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        editor::create(self.params.clone(), self.ui.clone())
     }
 
     fn task_executor(&mut self) -> TaskExecutor<Self> {
@@ -195,6 +229,10 @@ impl Plugin for Momotone {
             octaves: [p.oct_chords.value(), p.oct_bass.value(), p.oct_arp.value(), p.oct_melody.value()],
             split_channels: p.split_channels.value(),
         };
+
+        self.ui.beat.store(block.start_beat.to_bits(), Ordering::Relaxed);
+        self.ui.tempo.store(transport.tempo.unwrap_or(0.0).to_bits(), Ordering::Relaxed);
+        self.ui.playing.store(transport.playing, Ordering::Relaxed);
 
         if transport.playing {
             // New ideas come in on the bar line, so they stay in time.
