@@ -11,7 +11,7 @@ use std::process::exit;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  momotone styles\n  momotone gen [--style ID] [--key C] [--energy 0..1] [--bars 4] [--seed N] [--layers chords,bass,arp,melody|all] [-o out.mid]\n  momotone spec FILE.json [--seed N] [--layers ...] [-o out.mid]\n  momotone prompt"
+        "usage:\n  momotone styles\n  momotone gen [--style ID] [--key C] [--energy 0..1] [--bars 4] [--seed N] [--layers chords,bass,arp,melody,drums|all] [-o out.mid]\n  momotone spec FILE.json [--seed N] [--layers ...] [-o out.mid]\n  momotone prompt"
     );
     exit(2)
 }
@@ -29,6 +29,7 @@ fn parse_layers(s: &str) -> Layers {
             "bass" => l.bass = true,
             "arp" => l.arp = true,
             "melody" => l.melody = true,
+            "drums" => l.drums = true,
             "all" => l = Layers::all(),
             other => fail(format!("unknown layer '{other}'")),
         }

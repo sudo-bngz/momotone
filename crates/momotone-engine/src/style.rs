@@ -29,6 +29,27 @@ pub struct BassPart {
     pub max_len: f64,
 }
 
+/// A drum kit pattern: one grid per voice (same grid language as the other parts).
+/// Notes follow the General MIDI drum map, which most drum machines understand.
+pub struct Drums {
+    pub kick: &'static str,
+    pub snare: &'static str,
+    /// 38 snare, 39 clap or 37 rim shot.
+    pub snare_note: u8,
+    pub hat: &'static str,
+    pub open_hat: &'static str,
+    pub perc: &'static str,
+    /// e.g. 70 shaker, 75 claves, 64 low conga, 51 ride, 56 cowbell, 54 tambourine.
+    pub perc_note: u8,
+}
+
+pub const KICK: u8 = 36;
+pub const CLOSED_HAT: u8 = 42;
+pub const OPEN_HAT: u8 = 46;
+pub const SNARE: u8 = 38;
+pub const CLAP: u8 = 39;
+pub const RIM: u8 = 37;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArpDir {
     Up,
@@ -56,6 +77,7 @@ pub struct Style {
     pub arp_dirs: &'static [ArpDir],
     /// Candidate melody positions; the melody picks a motif among them.
     pub melody: Part,
+    pub drums: &'static Drums,
 }
 
 impl std::fmt::Debug for Style {
@@ -89,6 +111,54 @@ const M_SYNC: &str = "0...2.1...3..1..";
 const M_SPARSE: &str = "0.......3...2...";
 const M_16: &str = "0213021302130213";
 
+
+// Drum kits. Kick, snare/clap, closed hat, open hat, percussion; "." rest, digit = energy threshold.
+const K4: &str = "0...0...0...0...";
+const BACKBEAT: &str = "....0.......0...";
+const OFF8: &str = "..0...0...0...0.";
+const EIGHTS: &str = "0.0.0.0.0.0.0.0.";
+const SIXTEENS: &str = "0606060606060606";
+const NONE: &str = "................";
+
+const fn kit(kick: &'static str, snare: &'static str, snare_note: u8, hat: &'static str, open_hat: &'static str, perc: &'static str, perc_note: u8) -> Drums {
+    Drums { kick, snare, snare_note, hat, open_hat, perc, perc_note }
+}
+
+const KIT_HOUSE: Drums = kit(K4, BACKBEAT, CLAP, OFF8, "......4.......4.", "5.5.5.5.5.5.5.5.", 70);
+const KIT_DEEP: Drums = kit(K4, "....3.......3...", CLAP, OFF8, "..............4.", "...5......5.....", 75);
+const KIT_TECH_HOUSE: Drums = kit(K4, BACKBEAT, CLAP, "..0.6.0...0.6.0.", "......5.......5.", "...4.....4...4..", 64);
+const KIT_AFRO: Drums = kit(K4, "......5.......5.", RIM, OFF8, NONE, "...0..0...0..0..", 63);
+const KIT_AMAPIANO: Drums = kit("0...4...0...4...", BACKBEAT, CLAP, NONE, NONE, SIXTEENS, 70);
+const KIT_TECHNO: Drums = kit(K4, "....4.......4...", CLAP, "..0.6.0.6.0.6.0.", "..............5.", "6.6.6.6.6.6.6.6.", 51);
+const KIT_MINIMAL: Drums = kit(K4, "......4.....5...", RIM, OFF8, NONE, "...5....4.5.....", 75);
+const KIT_DUB_TECHNO: Drums = kit(K4, "........5.......", CLAP, OFF8, NONE, "5.5.5.5.5.5.5.5.", 70);
+const KIT_DETROIT: Drums = kit(K4, BACKBEAT, CLAP, "..0.5.0.5.0.5.0.", NONE, "0.6.0.6.0.6.0.6.", 51);
+const KIT_ACID: Drums = kit(K4, BACKBEAT, CLAP, "..0.5.0.5.0.5.0.", "......4.......4.", "...6......6.....", 56);
+const KIT_HARD: Drums = kit("0...0...0...0..6", "....3.......3...", CLAP, "..0.6.0.6.0.6.0.", NONE, "0.5.0.5.0.5.0.5.", 51);
+const KIT_TRANCE: Drums = kit(K4, BACKBEAT, CLAP, "...6...6...6...6", OFF8, "4.4.4.4.4.4.4.4.", 51);
+const KIT_PSY: Drums = kit(K4, "....4.......4...", CLAP, OFF8, NONE, "...5...5...5...5", 75);
+const KIT_GARAGE: Drums = kit("0.....5...0.....", BACKBEAT, SNARE, SIXTEENS, "......5.......5.", "...4..4....4....", RIM);
+const KIT_BASSLINE: Drums = kit(K4, BACKBEAT, SNARE, "..0.6.0.6.0.6.0.", NONE, "...4..4....4....", RIM);
+const KIT_DNB: Drums = kit("0.........0.....", BACKBEAT, SNARE, "0.0.0.060.0.0.06", NONE, "..5...5...5...5.", 51);
+const KIT_JUNGLE: Drums = kit("0.0.......0.....", "....0..6.0..0...", SNARE, EIGHTS, NONE, "......5.......5.", 51);
+const KIT_DUBSTEP: Drums = kit("0.........5.....", "........0.......", SNARE, "0.6.0.6.0.6.0.6.", NONE, "...........5....", 75);
+const KIT_BREAKS: Drums = kit("0.....0...0..5..", BACKBEAT, SNARE, EIGHTS, "......5.......5.", NONE, 75);
+const KIT_ELECTRO: Drums = kit("0.....0...0.0...", BACKBEAT, CLAP, SIXTEENS, NONE, "...5.....5......", 56);
+const KIT_FOOTWORK: Drums = kit("0..0..0...0..0..", "........0.......", CLAP, EIGHTS, NONE, "...5..5....5..5.", 75);
+const KIT_DISCO: Drums = kit(K4, BACKBEAT, SNARE, "0...0...0...0...", OFF8, "....5.......5...", 54);
+const KIT_ITALO: Drums = kit(K4, BACKBEAT, SNARE, OFF8, NONE, "0606060606060606", 70);
+const KIT_FUNK: Drums = kit("0.....0...0..5..", "....0..5....0.6.", SNARE, SIXTEENS, "..............4.", NONE, 56);
+const KIT_SOUL: Drums = kit("0......5..0.....", BACKBEAT, SNARE, EIGHTS, NONE, "....5.......5...", 54);
+const KIT_DUB: Drums = kit("........0.......", "........0.......", RIM, "..0.5.0.5.0.5.0.", "..............4.", "....5.......5...", 75);
+const KIT_DANCEHALL: Drums = kit("0.......0.......", "...0..0....0..0.", SNARE, EIGHTS, NONE, "......5.......5.", 75);
+const KIT_AMBIENT: Drums = kit("0.......4.......", NONE, SNARE, "........5.......", NONE, "..........4.....", 75);
+const KIT_TRIP_HOP: Drums = kit("0......5..0.....", BACKBEAT, SNARE, EIGHTS, "......4.........", NONE, 75);
+const KIT_LOFI: Drums = kit("0......5..0.....", BACKBEAT, SNARE, EIGHTS, NONE, "..5.......5.....", 70);
+const KIT_DOWNTEMPO: Drums = kit("0.....0...0.....", BACKBEAT, SNARE, EIGHTS, NONE, "..5.......5.....", 70);
+const KIT_IDM: Drums = kit("0..5..0...0..4..", "....0..6.....0..", SNARE, SIXTEENS, NONE, "..5.......5..5..", 75);
+const KIT_SYNTHWAVE: Drums = kit("0.......0.......", BACKBEAT, SNARE, EIGHTS, NONE, NONE, 75);
+const KIT_HARDCORE: Drums = kit(K4, "....4.......4...", CLAP, OFF8, NONE, NONE, 75);
+
 const MINOR_POP: &[&[&str]] = &[
     &["i", "bVI", "bIII", "bVII"],
     &["bVI", "bVII", "i", "i"],
@@ -113,6 +183,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.6, 0.2),
         arp_dirs: &[Up, UpDown],
         melody: part(M_SYNC, 0.9, 1.5),
+        drums: &KIT_HOUSE,
     },
     Style {
         id: "deep-house",
@@ -129,6 +200,7 @@ pub const STYLES: &[Style] = &[
         arp: part("0.5.0.5.0.5.0.5.", 0.6, 0.4),
         arp_dirs: &[Up, UpDown],
         melody: part(M_SYNC, 0.9, 1.5),
+        drums: &KIT_DEEP,
     },
     Style {
         id: "tech-house",
@@ -145,6 +217,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.2),
         arp_dirs: &[Random, Up],
         melody: part(M_SPARSE, 0.85, 1.0),
+        drums: &KIT_TECH_HOUSE,
     },
     Style {
         id: "afro-house",
@@ -161,6 +234,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.6, 0.2),
         arp_dirs: &[UpDown, Random],
         melody: part(M_SYNC, 0.9, 1.5),
+        drums: &KIT_AFRO,
     },
     Style {
         id: "amapiano",
@@ -177,6 +251,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A8, 0.7, 0.4),
         arp_dirs: &[UpDown, Up],
         melody: part(M_SYNC, 0.9, 1.5),
+        drums: &KIT_AMAPIANO,
     },
     // ----------------------------------------------------------------- Techno
     Style {
@@ -194,6 +269,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.2),
         arp_dirs: &[Up, Random],
         melody: part(M_SPARSE, 0.85, 1.0),
+        drums: &KIT_TECHNO,
     },
     Style {
         id: "minimal",
@@ -210,6 +286,7 @@ pub const STYLES: &[Style] = &[
         arp: part("0.4.0.4.0.4.0.4.", 0.5, 0.3),
         arp_dirs: &[Random, Up],
         melody: part(M_SPARSE, 0.8, 1.0),
+        drums: &KIT_MINIMAL,
     },
     Style {
         id: "dub-techno",
@@ -226,6 +303,7 @@ pub const STYLES: &[Style] = &[
         arp: part("0.4.0.4.0.4.0.4.", 0.5, 0.3),
         arp_dirs: &[Up, Random],
         melody: part(M_SPARSE, 0.9, 2.0),
+        drums: &KIT_DUB_TECHNO,
     },
     Style {
         id: "detroit",
@@ -242,6 +320,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.6, 0.2),
         arp_dirs: &[Up, UpDown],
         melody: part(M_SYNC, 0.9, 1.5),
+        drums: &KIT_DETROIT,
     },
     Style {
         id: "acid",
@@ -258,6 +337,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.2),
         arp_dirs: &[Random],
         melody: part(M_SPARSE, 0.85, 1.0),
+        drums: &KIT_ACID,
     },
     Style {
         id: "hard-techno",
@@ -274,6 +354,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.15),
         arp_dirs: &[Up, Down],
         melody: part(M_SPARSE, 0.8, 1.0),
+        drums: &KIT_HARD,
     },
     // ----------------------------------------------------------------- Trance
     Style {
@@ -291,6 +372,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.6, 0.2),
         arp_dirs: &[Up, UpDown],
         melody: part(M_BUSY, 0.85, 1.0),
+        drums: &KIT_TRANCE,
     },
     Style {
         id: "progressive",
@@ -307,6 +389,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.6, 0.2),
         arp_dirs: &[UpDown, Up],
         melody: part(M_SYNC, 0.9, 1.5),
+        drums: &KIT_TRANCE,
     },
     Style {
         id: "psytrance",
@@ -323,6 +406,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.15),
         arp_dirs: &[Random, Up],
         melody: part(M_16, 0.8, 0.5),
+        drums: &KIT_PSY,
     },
     // -------------------------------------------------------------- UK & Bass
     Style {
@@ -346,6 +430,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A8, 0.6, 0.4),
         arp_dirs: &[Up, Random],
         melody: part("0.42.3.1.52.4.3.", 0.85, 1.0),
+        drums: &KIT_GARAGE,
     },
     Style {
         id: "bassline",
@@ -362,6 +447,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.2),
         arp_dirs: &[Up, Random],
         melody: part("0.42.3.1.52.4.3.", 0.85, 1.0),
+        drums: &KIT_BASSLINE,
     },
     Style {
         id: "dnb",
@@ -378,6 +464,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.15),
         arp_dirs: &[Up, UpDown],
         melody: part(M_SYNC, 0.9, 1.5),
+        drums: &KIT_DNB,
     },
     Style {
         id: "liquid-dnb",
@@ -394,6 +481,7 @@ pub const STYLES: &[Style] = &[
         arp: part("0.4.0.4.0.4.0.4.", 0.6, 0.25),
         arp_dirs: &[UpDown, Up],
         melody: part(M_BUSY, 0.9, 1.0),
+        drums: &KIT_DNB,
     },
     Style {
         id: "jungle",
@@ -410,6 +498,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A8, 0.6, 0.3),
         arp_dirs: &[Up, Random],
         melody: part(M_SPARSE, 0.9, 2.0),
+        drums: &KIT_JUNGLE,
     },
     Style {
         id: "dubstep",
@@ -426,6 +515,7 @@ pub const STYLES: &[Style] = &[
         arp: part("0...0...0...0...", 0.6, 0.4),
         arp_dirs: &[Up, Down],
         melody: part(M_SPARSE, 0.9, 2.0),
+        drums: &KIT_DUBSTEP,
     },
     // ------------------------------------------------------- Breaks & Electro
     Style {
@@ -443,6 +533,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.2),
         arp_dirs: &[Up, Random],
         melody: part(M_SYNC, 0.85, 1.0),
+        drums: &KIT_BREAKS,
     },
     Style {
         id: "electro",
@@ -459,6 +550,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.15),
         arp_dirs: &[Down, Up],
         melody: part(M_BUSY, 0.8, 0.75),
+        drums: &KIT_ELECTRO,
     },
     Style {
         id: "footwork",
@@ -475,6 +567,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.15),
         arp_dirs: &[Random],
         melody: part("0..2..0...3..1..", 0.8, 1.0),
+        drums: &KIT_FOOTWORK,
     },
     // ----------------------------------------------------------- Disco & Funk
     Style {
@@ -492,6 +585,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.6, 0.2),
         arp_dirs: &[Up, UpDown],
         melody: part("0.2.1.3.0.2.1.4.", 0.85, 1.0),
+        drums: &KIT_DISCO,
     },
     Style {
         id: "italo",
@@ -508,6 +602,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.6, 0.2),
         arp_dirs: &[Up],
         melody: part(M_BUSY, 0.85, 1.0),
+        drums: &KIT_ITALO,
     },
     Style {
         id: "funk",
@@ -524,6 +619,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.2),
         arp_dirs: &[Random, Up],
         melody: part(M_BUSY, 0.85, 1.0),
+        drums: &KIT_FUNK,
     },
     Style {
         id: "soul",
@@ -546,6 +642,7 @@ pub const STYLES: &[Style] = &[
         arp: part("0.2.0.2.0.2.0.2.", 0.7, 0.5),
         arp_dirs: &[UpDown, Up],
         melody: part(M_BUSY, 0.9, 1.5),
+        drums: &KIT_SOUL,
     },
     // ------------------------------------------------------------ Dub & Roots
     Style {
@@ -563,6 +660,7 @@ pub const STYLES: &[Style] = &[
         arp: part("......0.......5.", 0.6, 0.75),
         arp_dirs: &[Down, Random],
         melody: part("0.....3.2...1...", 0.9, 2.0),
+        drums: &KIT_DUB,
     },
     Style {
         id: "dancehall",
@@ -579,6 +677,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A8, 0.6, 0.3),
         arp_dirs: &[Up, Random],
         melody: part(M_SYNC, 0.85, 1.0),
+        drums: &KIT_DANCEHALL,
     },
     // -------------------------------------------------------------- Downtempo
     Style {
@@ -596,6 +695,7 @@ pub const STYLES: &[Style] = &[
         arp: part("0.4.0.4.0.4.0.4.", 0.8, 0.5),
         arp_dirs: &[UpDown, Up, Random],
         melody: part(M_SPARSE, 0.95, 3.0),
+        drums: &KIT_AMBIENT,
     },
     Style {
         id: "trip-hop",
@@ -612,6 +712,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A8, 0.7, 0.4),
         arp_dirs: &[Down, Random],
         melody: part(M_SPARSE, 0.9, 2.0),
+        drums: &KIT_TRIP_HOP,
     },
     Style {
         id: "lofi",
@@ -628,6 +729,7 @@ pub const STYLES: &[Style] = &[
         arp: part("0.3.0.3.0.3.0.3.", 0.7, 0.5),
         arp_dirs: &[Up, Random],
         melody: part("0.3.2.4.1.3.2.5.", 0.9, 1.5),
+        drums: &KIT_LOFI,
     },
     Style {
         id: "downtempo",
@@ -644,6 +746,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A8, 0.7, 0.4),
         arp_dirs: &[UpDown, Up],
         melody: part(M_SYNC, 0.9, 1.5),
+        drums: &KIT_DOWNTEMPO,
     },
     Style {
         id: "idm",
@@ -660,6 +763,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.15),
         arp_dirs: &[Random],
         melody: part(M_16, 0.7, 0.5),
+        drums: &KIT_IDM,
     },
     Style {
         id: "synthwave",
@@ -676,6 +780,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.6, 0.2),
         arp_dirs: &[Up, UpDown],
         melody: part(M_BUSY, 0.9, 1.5),
+        drums: &KIT_SYNTHWAVE,
     },
     // ------------------------------------------------------------------- Hard
     Style {
@@ -693,6 +798,7 @@ pub const STYLES: &[Style] = &[
         arp: part(A16, 0.5, 0.15),
         arp_dirs: &[Up, Down],
         melody: part(M_BUSY, 0.8, 0.75),
+        drums: &KIT_HARDCORE,
     },
 ];
 
@@ -763,6 +869,11 @@ mod tests {
             }
             assert_eq!(s.melody.grid.len(), 16, "{} melody grid is one bar", s.id);
             assert!(FAMILIES.contains(&s.family), "{} has unknown family {}", s.id, s.family);
+            let d = s.drums;
+            for (name, g) in [("kick", d.kick), ("snare", d.snare), ("hat", d.hat), ("open hat", d.open_hat), ("perc", d.perc)] {
+                assert!(g.len() == 16 && g.bytes().all(|c| c == b'.' || c.is_ascii_digit()), "{} drums {name} '{g}'", s.id);
+            }
+            assert!(grid::parse(d.kick).iter().any(|c| *c == Some(0)), "{} kick has no core hit", s.id);
             assert!(find(s.id).is_some());
         }
     }

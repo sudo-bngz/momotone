@@ -16,14 +16,20 @@ pub enum Layer {
     Bass = 1,
     Arp = 2,
     Melody = 3,
+    Drums = 4,
 }
 
 impl Layer {
-    pub const ALL: [Layer; 4] = [Layer::Chords, Layer::Bass, Layer::Arp, Layer::Melody];
+    pub const COUNT: usize = 5;
+    pub const ALL: [Layer; Layer::COUNT] = [Layer::Chords, Layer::Bass, Layer::Arp, Layer::Melody, Layer::Drums];
 
     /// MIDI channel (0-based) used for this layer, so each part can go to its own machine.
+    /// Drums use channel 10, the General MIDI drum channel.
     pub fn channel(self) -> u8 {
-        self as u8
+        match self {
+            Layer::Drums => 9,
+            l => l as u8,
+        }
     }
 
     pub fn index(self) -> usize {
@@ -36,6 +42,7 @@ impl Layer {
             Layer::Bass => "Bass",
             Layer::Arp => "Arp",
             Layer::Melody => "Melody",
+            Layer::Drums => "Drums",
         }
     }
 }
@@ -46,21 +53,22 @@ pub struct Layers {
     pub bass: bool,
     pub arp: bool,
     pub melody: bool,
+    pub drums: bool,
 }
 
 impl Default for Layers {
     fn default() -> Self {
-        Layers { chords: true, bass: true, arp: false, melody: true }
+        Layers { chords: true, bass: true, arp: false, melody: true, drums: false }
     }
 }
 
 impl Layers {
     pub fn all() -> Self {
-        Layers { chords: true, bass: true, arp: true, melody: true }
+        Layers { chords: true, bass: true, arp: true, melody: true, drums: true }
     }
 
     pub fn none() -> Self {
-        Layers { chords: false, bass: false, arp: false, melody: false }
+        Layers { chords: false, bass: false, arp: false, melody: false, drums: false }
     }
 
     pub fn has(&self, l: Layer) -> bool {
@@ -69,6 +77,7 @@ impl Layers {
             Layer::Bass => self.bass,
             Layer::Arp => self.arp,
             Layer::Melody => self.melody,
+            Layer::Drums => self.drums,
         }
     }
 }
@@ -103,14 +112,15 @@ impl Pattern {
         }
     }
 
-    /// Shifts each part by its own number of octaves (chords, bass, arp, melody).
-    /// Notes pushed outside the MIDI range are dropped.
-    pub fn transposed(&self, octaves: [i32; 4]) -> Pattern {
+    /// Shifts each part by its own number of octaves (chords, bass, arp, melody). Drums keep
+    /// their notes: each note is an instrument. Notes pushed outside the MIDI range are dropped.
+    pub fn transposed(&self, octaves: [i32; Layer::COUNT]) -> Pattern {
         let notes = self
             .notes
             .iter()
             .filter_map(|n| {
-                let p = n.pitch as i32 + 12 * octaves[n.layer.index()];
+                let shift = if n.layer == Layer::Drums { 0 } else { octaves[n.layer.index()] };
+                let p = n.pitch as i32 + 12 * shift;
                 (0..=127).contains(&p).then(|| Note { pitch: p as u8, ..*n })
             })
             .collect();
@@ -140,6 +150,9 @@ pub fn generate(plan: &Plan, layers: Layers, seed: u64) -> Pattern {
     }
     if layers.melody {
         melody(plan, &mut rng.fork(4), &mut notes);
+    }
+    if layers.drums {
+        drums(plan, &mut rng.fork(5), &mut notes);
     }
 
     notes.sort_by(|a, b| a.start.total_cmp(&b.start).then(a.pitch.cmp(&b.pitch)));
@@ -314,6 +327,41 @@ fn arp(plan: &Plan, voicings: &[Vec<i32>], rng: &mut Rng, out: &mut Vec<Note>) {
             velocity: vel(rng, plan, h.step, h.threshold),
             layer: Layer::Arp,
         });
+    }
+}
+
+// ---------------------------------------------------------------- drums
+
+/// Kick, snare/clap, hats and percussion from the style's kit, plus a snare fill into the
+/// loop point at high energy (it only adds hits, so turning Energy up never removes any).
+fn drums(plan: &Plan, rng: &mut Rng, out: &mut Vec<Note>) {
+    use crate::style::{CLOSED_HAT, KICK, OPEN_HAT};
+    let kit = plan.style.drums;
+    let voices: [(&str, u8, f64, f64, i32); 5] = [
+        (kit.kick, KICK, 0.9, 0.25, 8),
+        (kit.snare, kit.snare_note, 0.9, 0.25, 4),
+        (kit.hat, CLOSED_HAT, 0.5, 0.12, -10),
+        (kit.open_hat, OPEN_HAT, 0.9, 0.5, -4),
+        (kit.perc, kit.perc_note, 0.5, 0.15, -12),
+    ];
+    for (grid, note, gate, max_len, accent) in voices {
+        for h in hits(plan, grid, gate, max_len) {
+            let v = vel(rng, plan, h.step, h.threshold) as i32 + accent;
+            out.push(Note { start: h.start, length: h.len, pitch: note, velocity: v.clamp(1, 127) as u8, layer: Layer::Drums });
+        }
+    }
+
+    // Fill: 16th snares rising over the last beat of the loop, at 70 % energy and up.
+    if plan.bars >= 2 && plan.energy >= 0.7 {
+        let last_bar = (plan.bars - 1) as usize * crate::grid::STEPS_PER_BAR;
+        for (k, step) in (last_bar + 12..last_bar + 16).enumerate() {
+            let start = plan.step_time(step);
+            let taken = out.iter().any(|n| n.layer == Layer::Drums && n.pitch == kit.snare_note && (n.start - start).abs() < 1e-6);
+            if !taken {
+                let v = 70 + 12 * k as i32 + rng.range(-3, 3);
+                out.push(Note { start, length: 0.12, pitch: kit.snare_note, velocity: v.clamp(1, 127) as u8, layer: Layer::Drums });
+            }
+        }
     }
 }
 
@@ -507,12 +555,30 @@ mod tests {
         let p = generate(&plan, Layers::all(), 2);
         let bass = p.only(Layer::Bass);
         assert!(bass.notes.iter().all(|n| n.layer == Layer::Bass) && !bass.notes.is_empty());
-        let up = p.transposed([0, 1, 0, 0]);
+        let up = p.transposed([0, 1, 0, 0, 3]);
         for (a, b) in p.notes.iter().zip(&up.notes) {
             let d = if a.layer == Layer::Bass { 12 } else { 0 };
             assert_eq!(a.pitch as i32 + d, b.pitch as i32);
         }
     }
+
+    #[test]
+    fn drums_follow_the_kit() {
+        let plan = crate::style::find("techno").unwrap().plan(PitchClass::parse("A").unwrap(), 4, 0.0, 1);
+        let p = generate(&plan, Layers { drums: true, ..Layers::none() }, 1);
+        let kicks: Vec<f64> = p.notes.iter().filter(|n| n.pitch == crate::style::KICK).map(|n| n.start).collect();
+        assert_eq!(kicks.len(), 16, "four on the floor over 4 bars");
+        assert!(kicks.iter().all(|t| (t.fract()).abs() < 1e-9));
+        assert!(p.notes.iter().all(|n| n.layer == Layer::Drums));
+        // A fill appears in the last bar only at high energy.
+        let busy = crate::style::find("techno").unwrap().plan(PitchClass::parse("A").unwrap(), 4, 0.9, 1);
+        let q = generate(&busy, Layers { drums: true, ..Layers::none() }, 1);
+        let fill = q.notes.iter().filter(|n| n.pitch == busy.style.drums.snare_note && n.start >= 15.0).count();
+        assert!(fill >= 4, "{fill}");
+        assert_eq!(MIDI_DRUM_CHANNEL, Layer::Drums.channel());
+    }
+
+    const MIDI_DRUM_CHANNEL: u8 = 9;
 
     #[test]
     fn deterministic() {
@@ -541,7 +607,7 @@ mod tests {
                 let plan = style.plan(root, 4, e, 5);
                 let p = generate(&plan, Layers::all(), 5);
                 if let Some(q) = &prev {
-                    for l in [Layer::Chords, Layer::Bass, Layer::Arp] {
+                    for l in [Layer::Chords, Layer::Bass, Layer::Arp, Layer::Drums] {
                         assert!(count(&p, l) >= count(q, l), "{} {:?} at energy {e}", style.id, l);
                         // Hits present at lower energy are still there, at the same time.
                         for n in q.notes.iter().filter(|n| n.layer == l) {
