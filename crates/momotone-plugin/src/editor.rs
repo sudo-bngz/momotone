@@ -1,44 +1,75 @@
-//! The Momotone screen: pick a style and a key, set the energy, hit "New idea", see the
-//! chords and every part, export the loop as MIDI files.
+//! The Momotone screen, in the Momo's Basement look: black, white mono caps, thin lines,
+//! iridescent accents.
 //!
-//! Everything here goes through the plugin's parameters, so the DAW records and recalls it,
-//! and the Push can still drive the same controls.
+//! Dropdowns pick the style, key, bars and link role; knobs set energy, the idea and each
+//! part's octave. Everything goes through the plugin's parameters, so the DAW records and
+//! recalls it and the Push can drive the same controls.
 
 use crate::link;
-use crate::params::{KeyChoice, MomotoneParams, PartChoice, RoleChoice, StyleChoice};
+use crate::params::{KeyChoice, MomotoneParams, PartChoice, RoleChoice};
 use crate::{plan_for, settings_from, GenSettings, UiShared};
-use momotone_engine::{explain, generate, midi, Layer, Layers, Pattern, PitchClass, Plan, STYLES};
+use momotone_engine::style::{FAMILIES, STYLES};
+use momotone_engine::{explain, generate, midi, Layer, Layers, Pattern, PitchClass, Plan};
 use nih_plug::prelude::*;
 use nih_plug_egui::egui::{
-    self, vec2, Align, Align2, Color32, CursorIcon, FontId, Layout, Pos2, Rect, Response, RichText, Sense, Stroke,
-    StrokeKind, Ui,
+    self, epaint::Shadow, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, FontData, FontDefinitions, FontFamily,
+    FontId, Layout, Pos2, Rect, Response, RichText, Sense, Shape, Stroke, StrokeKind, Ui,
 };
 use nih_plug_egui::create_egui_editor;
+use std::f32::consts::PI;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub const WIDTH: u32 = 940;
-pub const HEIGHT: u32 = 790;
+pub const WIDTH: u32 = 920;
+pub const HEIGHT: u32 = 560;
 
-const BG: Color32 = Color32::from_rgb(0x15, 0x12, 0x10);
-const PANEL: Color32 = Color32::from_rgb(0x23, 0x1e, 0x1a);
-const PANEL_HI: Color32 = Color32::from_rgb(0x30, 0x29, 0x23);
-const LINE: Color32 = Color32::from_rgb(0x3b, 0x33, 0x2c);
-const TEXT: Color32 = Color32::from_rgb(0xef, 0xe6, 0xda);
-const DIM: Color32 = Color32::from_rgb(0x9b, 0x8d, 0x7d);
-const ACCENT: Color32 = Color32::from_rgb(0xf2, 0xa9, 0x3b);
-const LIVE: Color32 = Color32::from_rgb(0x7c, 0xd9, 0x8a);
+const BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
+const PANEL: Color32 = Color32::from_rgb(0x07, 0x07, 0x07);
+const HOVER: Color32 = Color32::from_rgb(0x16, 0x16, 0x16);
+const LINE: Color32 = Color32::from_rgb(0x1f, 0x1f, 0x1f);
+const LINE_HI: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+const TEXT: Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
+const DIM: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
+const FAINT: Color32 = Color32::from_rgb(0x44, 0x44, 0x44);
+const MINT: Color32 = Color32::from_rgb(0x8e, 0xf5, 0xb0);
+const CYAN: Color32 = Color32::from_rgb(0x8f, 0xf0, 0xff);
+const LILAC: Color32 = Color32::from_rgb(0xc9, 0xa6, 0xff);
+const PINK: Color32 = Color32::from_rgb(0xf2, 0x8c, 0xf0);
+const WARN: Color32 = Color32::from_rgb(0xff, 0x6b, 0x6b);
 
-const LANE_H: f32 = 50.0;
-const LEFT_W: f32 = 190.0;
+const LANE_H: f32 = 40.0;
+const LEFT_W: f32 = 176.0;
 
 fn part_color(layer: Layer) -> Color32 {
     match layer {
-        Layer::Chords => Color32::from_rgb(0xf2, 0xa9, 0x3b),
-        Layer::Bass => Color32::from_rgb(0xe8, 0x5d, 0x5a),
-        Layer::Arp => Color32::from_rgb(0x4f, 0xc1, 0xb0),
-        Layer::Melody => Color32::from_rgb(0xb4, 0x8c, 0xf2),
+        Layer::Chords => LILAC,
+        Layer::Bass => PINK,
+        Layer::Arp => CYAN,
+        Layer::Melody => MINT,
     }
+}
+
+/// Mint → cyan → lilac → pink, like the label's artwork.
+fn iridescent(t: f32) -> Color32 {
+    let stops = [MINT, CYAN, LILAC, PINK];
+    let x = t.clamp(0.0, 1.0) * (stops.len() - 1) as f32;
+    let i = (x.floor() as usize).min(stops.len() - 2);
+    let f = x - i as f32;
+    let (a, b) = (stops[i], stops[i + 1]);
+    let mix = |p: u8, q: u8| (p as f32 + (q as f32 - p as f32) * f).round() as u8;
+    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+}
+
+fn display(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("display".into()))
+}
+
+fn mono(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Monospace)
+}
+
+fn caps(text: &str, size: f32, color: Color32) -> RichText {
+    RichText::new(text.to_uppercase()).font(mono(size)).color(color)
 }
 
 #[derive(Default)]
@@ -61,12 +92,58 @@ pub fn create(params: Arc<MomotoneParams>, shared: Arc<UiShared>) -> Option<Box<
 }
 
 fn setup(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "mono".into(),
+        Arc::new(FontData::from_static(include_bytes!("../assets/fonts/ShareTechMono-Regular.ttf"))),
+    );
+    fonts.font_data.insert(
+        "display".into(),
+        Arc::new(FontData::from_static(include_bytes!("../assets/fonts/Audiowide-Regular.ttf"))),
+    );
+    fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "mono".into());
+    fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "mono".into());
+    let mut display_family = vec!["display".to_string()];
+    display_family.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
+    fonts.families.insert(FontFamily::Name("display".into()), display_family);
+    ctx.set_fonts(fonts);
+
     let mut v = egui::Visuals::dark();
-    v.panel_fill = BG;
-    v.window_fill = BG;
     v.override_text_color = Some(TEXT);
-    v.selection.bg_fill = ACCENT;
+    v.panel_fill = BG;
+    v.window_fill = PANEL;
+    v.extreme_bg_color = BG;
+    v.faint_bg_color = PANEL;
+    v.window_stroke = Stroke::new(1.0_f32, LINE_HI);
+    v.window_shadow = Shadow::NONE;
+    v.popup_shadow = Shadow::NONE;
+    v.window_corner_radius = CornerRadius::same(2);
+    v.menu_corner_radius = CornerRadius::same(2);
+    for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
+        w.corner_radius = CornerRadius::same(2);
+        w.fg_stroke = Stroke::new(1.0_f32, TEXT);
+        w.expansion = 0.0;
+    }
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
+    v.widgets.inactive.weak_bg_fill = BG;
+    v.widgets.inactive.bg_fill = BG;
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE_HI);
+    v.widgets.hovered.weak_bg_fill = HOVER;
+    v.widgets.hovered.bg_fill = HOVER;
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, TEXT);
+    v.widgets.active.weak_bg_fill = HOVER;
+    v.widgets.active.bg_stroke = Stroke::new(1.0_f32, MINT);
+    v.widgets.open.weak_bg_fill = PANEL;
+    v.widgets.open.bg_stroke = Stroke::new(1.0_f32, MINT);
+    v.selection.bg_fill = MINT;
+    v.selection.stroke = Stroke::new(1.0_f32, BG);
     ctx.set_visuals(v);
+    ctx.style_mut(|s| {
+        s.spacing.button_padding = vec2(10.0, 5.0);
+        s.spacing.interact_size.y = 26.0;
+        s.text_styles.insert(egui::TextStyle::Body, mono(13.0));
+        s.text_styles.insert(egui::TextStyle::Button, mono(13.0));
+    });
 }
 
 fn set<P: Param>(setter: &ParamSetter, p: &P, v: P::Plain) {
@@ -106,151 +183,350 @@ fn draw(ctx: &egui::Context, setter: &ParamSetter, data: &mut EditorData, params
         ctx.request_repaint();
     }
 
-    let frame = egui::Frame::NONE.fill(BG).inner_margin(egui::Margin::symmetric(22, 18));
+    let frame = egui::Frame::NONE.fill(BG).inner_margin(egui::Margin::symmetric(22, 16));
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
         let tempo_hint = data.cache.as_ref().map_or(120.0, |c| c.1.tempo);
         header(ui, tempo_hint, shared);
-        link_row(ui, setter, params, follower, group, part);
-        if shared.conflict() {
-            ui.label(
-                RichText::new(format!(
-                    "Another Momotone is also Main in group {}: give this one another group, or make it a Follower.",
-                    group + 1
-                ))
-                .size(13.0)
-                .color(Color32::from_rgb(0xe8, 0x5d, 0x5a)),
-            );
-        }
-        ui.add_space(2.0);
+        rule(ui);
 
-        let (settings, plan, pattern) = match (view, data.cache.clone()) {
-            (Some(_), Some(c)) => c,
-            _ => {
-                ui.add_space(30.0);
-                ui.label(RichText::new(format!("No main Momotone in group {} yet.", group + 1)).size(18.0));
-                ui.label(
-                    RichText::new("Set one Momotone to Main in this group: this one will then play its part.")
-                        .size(13.0)
-                        .color(DIM),
-                );
-                return;
+        let cached = view.and(data.cache.clone());
+        ui.horizontal(|ui| {
+            if !follower {
+                if let Some((s, plan, _)) = &cached {
+                    music_selectors(ui, setter, params, s, plan);
+                }
+                ui.add_space(10.0);
+                let (r, _) = ui.allocate_exact_size(vec2(1.0, 44.0), Sense::hover());
+                ui.painter().rect_filled(r, 0.0_f32, LINE);
+                ui.add_space(10.0);
             }
+            link_selectors(ui, setter, params, follower, group, part);
+        });
+        if shared.conflict() {
+            ui.label(caps(
+                &format!("! another momotone is also main in group {}: change group or make this one a follower", group + 1),
+                12.0,
+                WARN,
+            ));
+        }
+
+        let Some((settings, plan, pattern)) = cached else {
+            ui.add_space(40.0);
+            ui.label(caps(&format!("signal acquisition... no main momotone in group {}", group + 1), 16.0, DIM));
+            ui.label(caps("set one momotone to main in this group: this one will then play its part.", 12.0, FAINT));
+            return;
         };
 
+        ui.add_space(4.0);
         if follower {
             follower_body(ui, setter, data, params, &plan, &pattern, &settings, part, shared);
-            return;
+        } else {
+            main_body(ui, setter, data, params, &plan, &pattern, &settings, shared);
         }
-
-        section(ui, "STYLE");
-        ui.horizontal_wrapped(|ui| {
-            for (i, s) in STYLES.iter().enumerate() {
-                if pill(ui, s.label, settings.style == i, ACCENT, 0.0).clicked() {
-                    set(setter, &params.style, StyleChoice::from_index(i));
-                }
-            }
-        });
-
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                section(ui, &format!("KEY  ·  {}", plan.key.mode.name()));
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for (i, pc) in PitchClass::ALL.iter().enumerate() {
-                        if pill(ui, pc.name(plan.key.prefers_flats()), settings.key == i, ACCENT, 36.0).clicked() {
-                            set(setter, &params.key, KeyChoice::from_index(i));
-                        }
-                    }
-                });
-            });
-            ui.add_space(18.0);
-            ui.vertical(|ui| {
-                section(ui, "BARS");
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    for b in [1, 2, 4, 8] {
-                        if pill(ui, &b.to_string(), settings.bars == b as u32, ACCENT, 36.0).clicked() {
-                            set(setter, &params.bars, b);
-                        }
-                    }
-                });
-            });
-        });
-
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                section(ui, "ENERGY");
-                energy_fader(ui, setter, params);
-            });
-            ui.add_space(18.0);
-            ui.vertical(|ui| {
-                section(ui, "IDEA");
-                idea_controls(ui, setter, params);
-            });
-        });
-
-        ui.add_space(4.0);
-        section(ui, "CHORDS");
-        chord_strip(ui, &plan, data, shared);
-        if let Some(chord) = plan.progression.get(data.selected_chord) {
-            ui.label(RichText::new(explain::chord_line(&plan, chord)).size(13.0));
-        }
-        ui.label(RichText::new(plan.style.blurb).size(12.0).color(DIM));
-
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            section(ui, "PARTS");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let split = params.split_channels.value();
-                let label = if split { "One MIDI channel per part" } else { "All parts on channel 1" };
-                if pill(ui, label, split, LIVE, 0.0).clicked() {
-                    set(setter, &params.split_channels, !split);
-                }
-            });
-        });
-        for layer in Layer::ALL {
-            part_lane(ui, setter, params, &pattern, layer, shared, false);
-        }
-
-        ui.add_space(6.0);
-        footer(ui, data, &plan, &pattern, &settings, params, shared);
     });
 }
 
-fn link_row(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, follower: bool, group: usize, part: PartChoice) {
+fn rule(ui: &mut Ui) {
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().rect_filled(r, 0.0_f32, LINE);
+}
+
+fn header(ui: &mut Ui, tempo_hint: f64, shared: &UiShared) {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        section(ui, "ROLE ");
-        if pill(ui, "Main", !follower, ACCENT, 70.0).on_hover_text("This Momotone is the one you play with").clicked() {
-            set(setter, &params.role, RoleChoice::Main);
-        }
-        if pill(ui, "Follower", follower, LIVE, 90.0)
-            .on_hover_text("Plays one part of the main Momotone of its group")
-            .clicked()
-        {
-            set(setter, &params.role, RoleChoice::Follower);
-        }
-        ui.add_space(14.0);
-        section(ui, "GROUP ");
-        for g in 1..=link::GROUPS as i32 {
-            let on = g as usize == group + 1;
-            if pill(ui, &g.to_string(), on, if follower { LIVE } else { ACCENT }, 30.0).clicked() {
-                set(setter, &params.group, g);
+        ui.label(RichText::new("MOMOTONE").font(display(28.0)).color(TEXT));
+        ui.add_space(6.0);
+        ui.vertical(|ui| {
+            ui.add_space(9.0);
+            ui.label(caps("midi loop engine // momo's basement", 11.0, DIM));
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let tempo = shared.tempo().unwrap_or(tempo_hint);
+            if shared.playing() {
+                ui.label(caps(&format!("live // {tempo:.0} bpm"), 12.0, MINT));
+                let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                ui.painter().circle_filled(r.center(), 3.5, MINT);
+            } else {
+                ui.label(caps(&format!("signal acquisition... // {tempo:.0} bpm"), 12.0, DIM));
             }
-        }
-        if follower {
-            ui.add_space(14.0);
-            section(ui, "PLAYS ");
-            for (i, l) in Layer::ALL.into_iter().enumerate() {
-                if pill(ui, l.name(), part.layer() == l, part_color(l), 0.0).clicked() {
-                    set(setter, &params.part, PartChoice::from_index(i));
-                }
-            }
-        }
+        });
     });
+}
+
+/// Small labelled column: CAPS label on top, widget below.
+fn field(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 3.0;
+        ui.label(caps(label, 11.0, DIM));
+        add(ui);
+    });
+}
+
+/// One entry of a dropdown, white text, black on the mint selection.
+fn choice(ui: &mut Ui, on: bool, text: &str, color: Color32) -> bool {
+    ui.selectable_label(on, caps(text, 13.0, if on { BG } else { color })).clicked()
+}
+
+fn music_selectors(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, s: &GenSettings, plan: &Plan) {
+    field(ui, "style", |ui| {
+        let cur = s.style.min(STYLES.len() - 1);
+        egui::ComboBox::from_id_salt("style")
+            .width(230.0)
+            .height(460.0)
+            .selected_text(caps(STYLES[cur].label, 13.0, TEXT))
+            .show_ui(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for family in FAMILIES {
+                    ui.add_space(4.0);
+                    ui.label(caps(&format!("// {family}"), 10.0, DIM));
+                    for (i, st) in STYLES.iter().enumerate().filter(|(_, st)| st.family == *family) {
+                        let text = format!("{:<19}{:>4}", st.label, st.tempo as u32);
+                        if choice(ui, i == cur, &text, TEXT) {
+                            set(setter, &params.style, i as i32);
+                        }
+                    }
+                }
+            });
+    });
+    field(ui, "key", |ui| {
+        let flats = plan.key.prefers_flats();
+        egui::ComboBox::from_id_salt("key")
+            .width(56.0)
+            .selected_text(caps(PitchClass::ALL[s.key % 12].name(flats), 13.0, TEXT))
+            .show_ui(ui, |ui| {
+                for (i, pc) in PitchClass::ALL.iter().enumerate() {
+                    if choice(ui, s.key == i, pc.name(flats), TEXT) {
+                        set(setter, &params.key, KeyChoice::from_index(i));
+                    }
+                }
+            });
+    });
+    field(ui, "scale", |ui| {
+        let (r, resp) = ui.allocate_exact_size(vec2(118.0, 26.0), Sense::hover());
+        ui.painter().rect_stroke(r, 2.0_f32, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
+        ui.painter().text(r.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, plan.key.mode.name().to_uppercase(), mono(13.0), DIM);
+        resp.on_hover_text("Set by the style");
+    });
+    field(ui, "bars", |ui| {
+        egui::ComboBox::from_id_salt("bars")
+            .width(46.0)
+            .selected_text(caps(&s.bars.to_string(), 13.0, TEXT))
+            .show_ui(ui, |ui| {
+                for b in [1, 2, 4, 8] {
+                    if choice(ui, s.bars == b as u32, &b.to_string(), TEXT) {
+                        set(setter, &params.bars, b);
+                    }
+                }
+            });
+    });
+}
+
+fn link_selectors(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams, follower: bool, group: usize, part: PartChoice) {
+    field(ui, "role", |ui| {
+        egui::ComboBox::from_id_salt("role")
+            .width(92.0)
+            .selected_text(caps(if follower { "follower" } else { "main" }, 13.0, if follower { CYAN } else { TEXT }))
+            .show_ui(ui, |ui| {
+                if choice(ui, !follower, "main", TEXT) {
+                    set(setter, &params.role, RoleChoice::Main);
+                }
+                if choice(ui, follower, "follower", CYAN) {
+                    set(setter, &params.role, RoleChoice::Follower);
+                }
+            });
+    });
+    field(ui, "group", |ui| {
+        egui::ComboBox::from_id_salt("group")
+            .width(40.0)
+            .selected_text(caps(&(group + 1).to_string(), 13.0, TEXT))
+            .show_ui(ui, |ui| {
+                for g in 1..=link::GROUPS as i32 {
+                    if choice(ui, g as usize == group + 1, &g.to_string(), TEXT) {
+                        set(setter, &params.group, g);
+                    }
+                }
+            });
+    });
+    if follower {
+        field(ui, "plays", |ui| {
+            egui::ComboBox::from_id_salt("part")
+                .width(90.0)
+                .selected_text(caps(part.layer().name(), 13.0, part_color(part.layer())))
+                .show_ui(ui, |ui| {
+                    for (i, l) in Layer::ALL.into_iter().enumerate() {
+                        if choice(ui, part.layer() == l, l.name(), part_color(l)) {
+                            set(setter, &params.part, PartChoice::from_index(i));
+                        }
+                    }
+                });
+        });
+    }
+}
+
+// ------------------------------------------------------------------ knobs
+
+/// A rotary knob bound to a parameter, drawn in `rect`: drag up/down (Shift = fine),
+/// double-click = default. Bipolar knobs fill from 12 o'clock.
+fn knob_core<P: Param>(ui: &mut Ui, setter: &ParamSetter, param: &P, rect: Rect, resp: &Response, bipolar: bool) {
+    let id = resp.id.with("knob-drag");
+    if resp.drag_started() {
+        setter.begin_set_parameter(param);
+        ui.memory_mut(|m| m.data.insert_temp(id, param.unmodulated_normalized_value()));
+    }
+    if resp.dragged() {
+        let fine = ui.input(|i| i.modifiers.shift);
+        let per_px = if fine { 1.0 / 800.0 } else { 1.0 / 180.0 };
+        // Accumulate in our own value: stepped parameters would otherwise swallow small moves.
+        let v: f32 = ui.memory(|m| m.data.get_temp(id)).unwrap_or(param.unmodulated_normalized_value());
+        let v = (v - resp.drag_delta().y * per_px).clamp(0.0, 1.0);
+        ui.memory_mut(|m| m.data.insert_temp(id, v));
+        setter.set_parameter_normalized(param, v);
+    }
+    if resp.drag_stopped() {
+        setter.end_set_parameter(param);
+    }
+    if resp.double_clicked() {
+        setter.begin_set_parameter(param);
+        setter.set_parameter_normalized(param, param.default_normalized_value());
+        setter.end_set_parameter(param);
+    }
+
+    let v = param.unmodulated_normalized_value();
+    let painter = ui.painter();
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) / 2.0 - 2.0;
+    let (a0, a1) = (0.75 * PI, 2.25 * PI);
+    let at = |t: f32| a0 + (a1 - a0) * t;
+    let point = |a: f32, rad: f32| c + vec2(a.cos(), a.sin()) * rad;
+    let steps = 48;
+    let track: Vec<Pos2> = (0..=steps).map(|i| point(at(i as f32 / steps as f32), r)).collect();
+    painter.add(Shape::line(track, Stroke::new(2.5_f32, FAINT)));
+    let (from, to) = if bipolar { (0.5f32.min(v), 0.5f32.max(v)) } else { (0.0, v) };
+    let n = ((to - from) * steps as f32).ceil().max(1.0) as usize;
+    if to > from {
+        for i in 0..n {
+            let t0 = from + (to - from) * i as f32 / n as f32;
+            let t1 = from + (to - from) * (i + 1) as f32 / n as f32;
+            painter.line_segment([point(at(t0), r), point(at(t1), r)], Stroke::new(2.5_f32, iridescent(t1)));
+        }
+    }
+    let hovered = resp.hovered() || resp.dragged();
+    painter.circle_filled(c, r - 5.0, PANEL);
+    painter.circle_stroke(c, r - 5.0, Stroke::new(1.0_f32, if hovered { TEXT } else { LINE_HI }));
+    painter.line_segment([point(at(v), r * 0.2), point(at(v), r - 7.0)], Stroke::new(2.0_f32, TEXT));
+}
+
+/// Big labelled knob: LABEL above, value under.
+fn knob<P: Param>(ui: &mut Ui, setter: &ParamSetter, param: &P, label: &str, value: &str, size: f32, hint: &str) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let w = size + 16.0;
+        ui.set_width(w);
+        ui.vertical_centered(|ui| ui.label(caps(label, 11.0, DIM)));
+        let (rect, resp) = ui.allocate_exact_size(vec2(w, size), Sense::click_and_drag());
+        let knob_rect = Rect::from_center_size(rect.center(), vec2(size, size));
+        knob_core(ui, setter, param, knob_rect, &resp, false);
+        resp.on_hover_cursor(CursorIcon::ResizeVertical).on_hover_text(hint);
+        ui.vertical_centered(|ui| ui.label(RichText::new(value).font(display(13.0)).color(TEXT)));
+    });
+}
+
+/// Outlined square-ish button; `on` fills it with `color`.
+fn btn(ui: &mut Ui, text: &str, on: bool, color: Color32, min_w: f32) -> Response {
+    let font = mono(12.0);
+    let label = text.to_uppercase();
+    let galley = ui.painter().layout_no_wrap(label.clone(), font.clone(), TEXT);
+    let w = (galley.size().x + 18.0).max(min_w);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
+    let p = ui.painter();
+    let hovered = resp.hovered();
+    if on {
+        p.rect_filled(rect, 2.0_f32, color);
+    } else if hovered {
+        p.rect_filled(rect, 2.0_f32, HOVER);
+    }
+    p.rect_stroke(rect, 2.0_f32, Stroke::new(1.0_f32, if on { color } else if hovered { TEXT } else { LINE_HI }), StrokeKind::Inside);
+    p.text(rect.center(), Align2::CENTER_CENTER, label, font, if on { BG } else { TEXT });
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+// ------------------------------------------------------------------ bodies
+
+#[allow(clippy::too_many_arguments)]
+fn main_body(
+    ui: &mut Ui,
+    setter: &ParamSetter,
+    data: &mut EditorData,
+    params: &MomotoneParams,
+    plan: &Plan,
+    pattern: &Pattern,
+    settings: &GenSettings,
+    shared: &UiShared,
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        knob(
+            ui,
+            setter,
+            &params.energy,
+            "energy",
+            &format!("{} %", settings.energy),
+            62.0,
+            "Laid back → peak time: adds ghost notes and fills. Drag (Shift = fine), double-click = 50 %",
+        );
+        knob(
+            ui,
+            setter,
+            &params.variation,
+            "idea",
+            &format!("#{}", settings.seed),
+            62.0,
+            "Each number is a different idea in this style. Drag to browse",
+        );
+        ui.vertical(|ui| {
+            ui.add_space(18.0);
+            let cur = params.variation.value();
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if btn(ui, "◀", false, MINT, 30.0).on_hover_text("Previous idea").clicked() {
+                    set(setter, &params.variation, if cur <= 1 { 500 } else { cur - 1 });
+                }
+                if btn(ui, "▶", false, MINT, 30.0).on_hover_text("Next idea").clicked() {
+                    set(setter, &params.variation, if cur >= 500 { 1 } else { cur + 1 });
+                }
+            });
+            if btn(ui, "new idea", true, MINT, 64.0).on_hover_text("Jump to a random idea in this style").clicked() {
+                set(setter, &params.variation, random_idea(cur));
+            }
+        });
+        ui.add_space(8.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.label(caps("chords", 11.0, DIM));
+            chord_strip(ui, plan, data, shared);
+            ui.label(RichText::new(plan.style.blurb).font(mono(11.0)).color(DIM));
+        });
+    });
+
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(caps("parts", 11.0, DIM));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let split = params.split_channels.value();
+            let text = if split { "out: ch 1-4, one per part" } else { "out: all parts on ch 1" };
+            if btn(ui, text, false, MINT, 0.0)
+                .on_hover_text("One MIDI channel per part (chords 1, bass 2, arp 3, melody 4), or everything on channel 1")
+                .clicked()
+            {
+                set(setter, &params.split_channels, !split);
+            }
+        });
+    });
+    for layer in Layer::ALL {
+        part_lane(ui, setter, params, pattern, layer, shared, false);
+    }
+    ui.add_space(4.0);
+    footer(ui, data, plan, pattern, settings, params, shared);
 }
 
 /// A follower's screen: what the main plays, the chords, and its one part.
@@ -266,11 +542,10 @@ fn follower_body(
     part: PartChoice,
     shared: &UiShared,
 ) {
-    ui.add_space(6.0);
     let key = plan.key.root.name(plan.key.prefers_flats());
-    ui.label(
-        RichText::new(format!(
-            "Following group {}:  {} · {} {} · {} bars · energy {} % · idea #{}",
+    ui.label(caps(
+        &format!(
+            "following group {} // {} · {} {} · {} bars · energy {} % · idea #{}",
             params.group.value(),
             plan.style.label,
             key,
@@ -278,183 +553,59 @@ fn follower_body(
             plan.bars,
             settings.energy,
             settings.seed
-        ))
-        .size(15.0),
-    );
-    ui.label(
-        RichText::new(format!(
-            "Style, key, energy and ideas are set on the main Momotone. This one plays the {}.",
-            part.layer().name().to_lowercase()
-        ))
-        .size(12.0)
-        .color(DIM),
-    );
+        ),
+        14.0,
+        CYAN,
+    ));
+    ui.label(caps(
+        &format!("style, key, energy and ideas are set on the main momotone. this one plays the {}.", part.layer().name()),
+        11.0,
+        DIM,
+    ));
     ui.add_space(6.0);
-    section(ui, "CHORDS");
+    ui.label(caps("chords", 11.0, DIM));
     chord_strip(ui, plan, data, shared);
-    if let Some(chord) = plan.progression.get(data.selected_chord) {
-        ui.label(RichText::new(explain::chord_line(plan, chord)).size(13.0));
-    }
     ui.add_space(6.0);
-    section(ui, "PART");
+    ui.label(caps("part", 11.0, DIM));
     part_lane(ui, setter, params, pattern, part.layer(), shared, true);
     ui.add_space(6.0);
     footer(ui, data, plan, pattern, settings, params, shared);
 }
 
-fn section(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(11.0).strong().color(DIM));
-}
-
-fn header(ui: &mut Ui, tempo_hint: f64, shared: &UiShared) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("MOMOTONE").size(26.0).strong().color(TEXT));
-        ui.label(RichText::new("by Momo's Basement").size(13.0).color(DIM));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let (dot, text) = if shared.playing() {
-                (LIVE, "playing".to_string())
-            } else {
-                (DIM, "press play in your DAW to hear it".to_string())
-            };
-            ui.label(RichText::new(text).size(12.0).color(dot));
-            let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-            ui.painter().circle_filled(r.center(), 4.0, dot);
-            let tempo = shared.tempo().unwrap_or(tempo_hint);
-            ui.label(RichText::new(format!("{:.0} bpm   ", tempo)).size(12.0).color(DIM));
-        });
-    });
-}
-
-/// A rounded button that lights up in `color` when selected.
-fn pill(ui: &mut Ui, text: &str, selected: bool, color: Color32, min_w: f32) -> Response {
-    let font = FontId::proportional(13.5);
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), TEXT);
-    let w = (galley.size().x + 24.0).max(min_w);
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 30.0), Sense::click());
-    let painter = ui.painter();
-    let fill = if selected {
-        color
-    } else if resp.hovered() {
-        PANEL_HI
-    } else {
-        PANEL
-    };
-    painter.rect_filled(rect, 7.0_f32, fill);
-    if !selected {
-        painter.rect_stroke(rect, 7.0_f32, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
-    }
-    painter.text(rect.center(), Align2::CENTER_CENTER, text, font, if selected { BG } else { TEXT });
-    resp.on_hover_cursor(CursorIcon::PointingHand)
-}
-
-fn energy_fader(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams) {
-    let (rect, resp) = ui.allocate_exact_size(vec2(360.0, 30.0), Sense::click_and_drag());
-    let value_at = |p: Pos2| ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-    if resp.drag_started() {
-        setter.begin_set_parameter(&params.energy);
-    }
-    if resp.dragged() {
-        if let Some(p) = resp.interact_pointer_pos() {
-            setter.set_parameter(&params.energy, value_at(p));
-        }
-    }
-    if resp.drag_stopped() {
-        setter.end_set_parameter(&params.energy);
-    }
-    if resp.clicked() {
-        if let Some(p) = resp.interact_pointer_pos() {
-            set(setter, &params.energy, value_at(p));
-        }
-    }
-    if resp.double_clicked() {
-        set(setter, &params.energy, 0.5);
-    }
-
-    let v = params.energy.value();
-    let painter = ui.painter();
-    painter.rect_filled(rect, 7.0_f32, PANEL);
-    painter.rect_stroke(rect, 7.0_f32, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
-    let filled = Rect::from_min_max(rect.min, Pos2::new(rect.left() + rect.width() * v, rect.bottom()));
-    painter.rect_filled(filled, 7.0_f32, ACCENT.gamma_multiply(0.85));
-    let font = FontId::proportional(12.0);
-    if v > 0.45 {
-        painter.text(rect.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, "laid back", font.clone(), BG);
-    }
-    if v < 0.75 {
-        painter.text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, "peak time", font, DIM);
-    }
-    // Value sits on the edge of the fill, in the colour that reads on its background.
-    let edge = rect.left() + rect.width() * v;
-    let text = format!("{:.0} %", v * 100.0);
-    if v > 0.5 {
-        painter.text(Pos2::new(edge - 8.0, rect.center().y), Align2::RIGHT_CENTER, text, FontId::proportional(14.0), BG);
-    } else {
-        painter.text(Pos2::new(edge + 8.0, rect.center().y), Align2::LEFT_CENTER, text, FontId::proportional(14.0), TEXT);
-    }
-    resp.on_hover_cursor(CursorIcon::ResizeHorizontal).on_hover_text("Drag to add ghost notes and fills. Double-click: 50 %");
-}
-
-fn idea_controls(ui: &mut Ui, setter: &ParamSetter, params: &MomotoneParams) {
-    let cur = params.variation.value();
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        if pill(ui, "◀", false, ACCENT, 36.0).on_hover_text("Previous idea").clicked() {
-            set(setter, &params.variation, if cur <= 1 { 500 } else { cur - 1 });
-        }
-        let (rect, _) = ui.allocate_exact_size(vec2(64.0, 30.0), Sense::hover());
-        ui.painter().rect_filled(rect, 7.0_f32, PANEL);
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, format!("#{cur}"), FontId::proportional(15.0), TEXT);
-        if pill(ui, "▶", false, ACCENT, 36.0).on_hover_text("Next idea").clicked() {
-            set(setter, &params.variation, if cur >= 500 { 1 } else { cur + 1 });
-        }
-        ui.add_space(8.0);
-        if pill(ui, "New idea", true, ACCENT, 130.0).on_hover_text("Jump to a random idea in this style").clicked() {
-            set(setter, &params.variation, random_idea(cur));
-        }
-    });
-}
-
-fn random_idea(current: i32) -> i32 {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64 ^ d.as_secs().wrapping_mul(0x9E37_79B9))
-        .unwrap_or(7);
-    let mut n = (nanos.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as i32 % 500 + 1;
-    if n == current {
-        n = n % 500 + 1;
-    }
-    n
-}
-
 fn chord_strip(ui: &mut Ui, plan: &Plan, data: &mut EditorData, shared: &UiShared) {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 58.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click());
     let n = plan.progression.len();
     let length = plan.length_beats();
     let now = shared.playing().then(|| plan.chord_index(shared.beat().rem_euclid(length)));
+    let index_at = |p: Pos2| (((p.x - rect.left()) / rect.width() * n as f32).floor().max(0.0) as usize).min(n - 1);
     if resp.clicked() {
         if let Some(p) = resp.interact_pointer_pos() {
-            let i = ((p.x - rect.left()) / rect.width() * n as f32).floor() as usize;
-            data.selected_chord = i.min(n - 1);
+            data.selected_chord = index_at(p);
         }
     }
+    let hovered = resp.hover_pos().map(index_at);
     let painter = ui.painter();
     let w = rect.width() / n as f32;
     for (i, chord) in plan.progression.iter().enumerate() {
-        let r = Rect::from_min_size(Pos2::new(rect.left() + i as f32 * w, rect.top()), vec2(w, rect.height())).shrink(3.0);
+        let r = Rect::from_min_size(Pos2::new(rect.left() + i as f32 * w, rect.top()), vec2(w, rect.height())).shrink2(vec2(2.0, 0.0));
         let selected = i == data.selected_chord;
-        painter.rect_filled(r, 8.0_f32, if selected { PANEL_HI } else { PANEL });
+        painter.rect_filled(r, 2.0_f32, if hovered == Some(i) { HOVER } else { PANEL });
         let stroke = if now == Some(i) {
-            Stroke::new(2.0_f32, LIVE)
+            Stroke::new(1.5_f32, MINT)
         } else if selected {
-            Stroke::new(1.5_f32, ACCENT)
+            Stroke::new(1.0_f32, TEXT)
         } else {
             Stroke::new(1.0_f32, LINE)
         };
-        painter.rect_stroke(r, 8.0_f32, stroke, StrokeKind::Inside);
-        painter.text(r.center() - vec2(0.0, 7.0), Align2::CENTER_CENTER, chord.name(&plan.key), FontId::proportional(19.0), TEXT);
-        painter.text(r.center() + vec2(0.0, 14.0), Align2::CENTER_CENTER, &chord.symbol, FontId::proportional(11.0), DIM);
+        painter.rect_stroke(r, 2.0_f32, stroke, StrokeKind::Inside);
+        painter.text(r.center() - vec2(0.0, 6.0), Align2::CENTER_CENTER, chord.name(&plan.key), display(16.0), TEXT);
+        painter.text(r.center() + vec2(0.0, 13.0), Align2::CENTER_CENTER, &chord.symbol, mono(11.0), DIM);
     }
-    resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Click a chord to see what it does");
+    // What the hovered (or last clicked) chord does, in plain words.
+    let shown = hovered.unwrap_or(data.selected_chord).min(n - 1);
+    let line = explain::chord_line(plan, &plan.progression[shown]);
+    resp.on_hover_cursor(CursorIcon::PointingHand);
+    ui.label(RichText::new(format!("> {line}")).font(mono(12.0)).color(TEXT));
 }
 
 fn part_lane(
@@ -474,28 +625,48 @@ fn part_lane(
 
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(vec2(LEFT_W, LANE_H), Layout::left_to_right(Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            if pill(ui, layer.name(), on, color, 74.0).on_hover_text("Turn this part on or off").clicked() && !follower {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            // On/off: a square LED and the part name.
+            let (r, resp) = ui.allocate_exact_size(vec2(86.0, LANE_H), Sense::click());
+            let led = Rect::from_center_size(Pos2::new(r.left() + 7.0, r.center().y), vec2(10.0, 10.0));
+            let p = ui.painter();
+            if on {
+                p.rect_filled(led, 1.0_f32, color);
+            } else {
+                p.rect_stroke(led, 1.0_f32, Stroke::new(1.0_f32, DIM), StrokeKind::Inside);
+            }
+            p.text(
+                Pos2::new(r.left() + 20.0, r.center().y),
+                Align2::LEFT_CENTER,
+                layer.name().to_uppercase(),
+                mono(13.0),
+                if on { TEXT } else { DIM },
+            );
+            let resp = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(if follower {
+                "Followers always play their part"
+            } else {
+                "Turn this part on or off"
+            });
+            if resp.clicked() && !follower {
                 set(setter, enabled, !on);
             }
-            ui.label(RichText::new(format!("ch {channel}")).size(11.0).color(DIM));
+            ui.label(caps(&format!("ch{channel}"), 11.0, FAINT));
+            // Octave: a small bipolar knob.
+            let (kr, kresp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click_and_drag());
+            knob_core(ui, setter, octave, kr, &kresp, true);
+            kresp.on_hover_cursor(CursorIcon::ResizeVertical).on_hover_text("Octave (drag, double-click = 0)");
             let o = octave.value();
-            if pill(ui, "−", false, color, 24.0).on_hover_text("Octave down").clicked() && o > -3 {
-                set(setter, octave, o - 1);
-            }
-            ui.label(RichText::new(format!("{o:+}")).size(12.0).color(if o == 0 { DIM } else { TEXT }));
-            if pill(ui, "+", false, color, 24.0).on_hover_text("Octave up").clicked() && o < 3 {
-                set(setter, octave, o + 1);
-            }
+            ui.label(caps(&format!("{o:+}"), 11.0, if o == 0 { DIM } else { TEXT }));
         });
 
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), LANE_H), Sense::hover());
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 6.0_f32, PANEL);
+        painter.rect_filled(rect, 0.0_f32, PANEL);
+        painter.rect_stroke(rect, 0.0_f32, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
         let length = pattern.length_beats.max(1.0);
         let x_at = |beat: f64| rect.left() + (beat / length) as f32 * rect.width();
         for b in 1..length as usize {
-            let stroke = if b % 4 == 0 { Stroke::new(1.0_f32, LINE) } else { Stroke::new(1.0_f32, LINE.gamma_multiply(0.45)) };
+            let stroke = if b % 4 == 0 { Stroke::new(1.0_f32, LINE_HI) } else { Stroke::new(1.0_f32, LINE) };
             let x = x_at(b as f64);
             painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], stroke);
         }
@@ -503,23 +674,23 @@ fn part_lane(
         let notes: Vec<_> = pattern.notes.iter().filter(|n| n.layer == layer).collect();
         if let (Some(lo), Some(hi)) = (notes.iter().map(|n| n.pitch).min(), notes.iter().map(|n| n.pitch).max()) {
             let range = (hi - lo) as f32 + 1.0;
-            let h = ((rect.height() - 8.0) / range).clamp(2.0, 8.0);
-            let fill = if on { color } else { color.gamma_multiply(0.22) };
+            let h = ((rect.height() - 8.0) / range).clamp(2.0, 6.0);
+            let fill = if on { color } else { color.gamma_multiply(0.18) };
             for n in notes {
                 let y = rect.bottom() - 4.0 - ((n.pitch - lo) as f32 + 0.5) / range * (rect.height() - 8.0);
                 let r = Rect::from_min_max(
                     Pos2::new(x_at(n.start) + 1.0, y - h / 2.0),
                     Pos2::new((x_at(n.start + n.length) - 1.0).max(x_at(n.start) + 3.0), y + h / 2.0),
                 );
-                painter.rect_filled(r, 2.0_f32, fill.gamma_multiply(0.55 + 0.45 * n.velocity as f32 / 127.0));
+                painter.rect_filled(r, 0.0_f32, fill.gamma_multiply(0.5 + 0.5 * n.velocity as f32 / 127.0));
             }
         }
         if !on {
-            painter.text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, "off", FontId::proportional(11.0), DIM);
+            painter.text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, "OFF", mono(11.0), DIM);
         }
         if shared.playing() {
             let x = x_at(shared.beat().rem_euclid(length));
-            painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.5_f32, TEXT));
+            painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0_f32, TEXT));
         }
     });
 }
@@ -533,38 +704,44 @@ fn footer(
     params: &MomotoneParams,
     shared: &UiShared,
 ) {
+    rule(ui);
     ui.horizontal(|ui| {
         let hint = "Saves each part as its own .mid, ready to drag onto your machine tracks";
-        if pill(ui, "Export MIDI loop", true, ACCENT, 160.0).on_hover_text(hint).clicked() {
+        if btn(ui, "export midi loop", false, MINT, 150.0).on_hover_text(hint).clicked() {
             let octaves = [params.oct_chords.value(), params.oct_bass.value(), params.oct_arp.value(), params.oct_melody.value()];
             let tempo = shared.tempo().unwrap_or(plan.tempo);
             data.status = Some(match export(plan, pattern, settings, octaves, tempo) {
                 Ok(dir) => {
-                    let msg = format!("Saved to {}", dir.display());
+                    let msg = format!("saved // {}", dir.display());
                     data.last_export = Some(dir);
                     (msg, true)
                 }
-                Err(e) => (format!("Export failed: {e}"), false),
+                Err(e) => (format!("export failed // {e}"), false),
             });
         }
         if let Some(dir) = data.last_export.clone() {
-            if pill(ui, "Open folder", false, ACCENT, 0.0).clicked() {
+            if btn(ui, "open folder", false, MINT, 0.0).clicked() {
                 open_folder(&dir);
             }
         }
-        match &data.status {
-            Some((msg, ok)) => {
-                ui.label(RichText::new(msg).size(12.0).color(if *ok { LIVE } else { Color32::from_rgb(0xe8, 0x5d, 0x5a) }));
-            }
-            None => {
-                ui.label(
-                    RichText::new("Tip: add ~/Music/Momotone to Live's Places, then drag parts onto tracks.")
-                        .size(12.0)
-                        .color(DIM),
-                );
-            }
-        }
+        let (text, color) = match &data.status {
+            Some((msg, ok)) => (msg.clone(), if *ok { MINT } else { WARN }),
+            None => ("tip // add ~/Music/Momotone to Live's Places, then drag parts onto tracks".into(), FAINT),
+        };
+        ui.label(RichText::new(text).font(mono(11.0)).color(color));
     });
+}
+
+fn random_idea(current: i32) -> i32 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64 ^ d.as_secs().wrapping_mul(0x9E37_79B9))
+        .unwrap_or(7);
+    let mut n = (nanos.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as i32 % 500 + 1;
+    if n == current {
+        n = n % 500 + 1;
+    }
+    n
 }
 
 fn music_dir() -> PathBuf {
@@ -630,7 +807,8 @@ mod tests {
     fn export_writes_one_file_per_part() {
         let tmp = std::env::temp_dir().join(format!("momotone-test-{}", std::process::id()));
         std::env::set_var("HOME", &tmp);
-        let s = GenSettings { style: 2, key: 9, bars: 4, seed: 3, energy: 60, layers: Layers { arp: false, ..Layers::all() } };
+        let dub = momotone_engine::style::index_of("dub").unwrap();
+        let s = GenSettings { style: dub, key: 9, bars: 4, seed: 3, energy: 60, layers: Layers { arp: false, ..Layers::all() } };
         let plan = plan_for(&s);
         let pattern = generate(&plan, Layers::all(), s.seed);
         let dir = export(&plan, &pattern, &s, [0, -1, 0, 1], 72.0).unwrap();
@@ -647,5 +825,11 @@ mod tests {
             let n = random_idea(cur);
             assert!((1..=500).contains(&n) && n != cur);
         }
+    }
+
+    #[test]
+    fn iridescent_endpoints() {
+        assert_eq!(iridescent(0.0), MINT);
+        assert_eq!(iridescent(1.0), PINK);
     }
 }

@@ -47,7 +47,7 @@ pub fn render(s: &GenSettings) -> Pattern {
 /// so both always see the very same pattern.
 pub fn settings_from(p: &MomotoneParams) -> GenSettings {
     GenSettings {
-        style: p.style.value().index(),
+        style: p.style.value().max(0) as usize,
         key: p.key.value() as usize,
         bars: p.bars.value() as u32,
         seed: p.variation.value() as u64,
@@ -335,14 +335,14 @@ nih_export_vst3!(Momotone);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use params::StyleChoice;
 
     #[test]
-    fn style_choices_match_engine() {
-        assert_eq!(StyleChoice::variants().len(), STYLES.len());
-        for (i, name) in StyleChoice::variants().iter().enumerate() {
-            assert_eq!(*name, STYLES[i].label);
-        }
+    fn style_param_shows_names() {
+        let p = MomotoneParams::default();
+        assert_eq!(STYLES[p.style.value() as usize].id, "ukg");
+        assert_eq!(p.style.normalized_value_to_string(0.0, false), STYLES[0].label);
+        assert_eq!(p.style.string_to_normalized_value("Dub Techno").map(|v| p.style.preview_plain(v)),
+            momotone_engine::style::index_of("dub-techno").map(|i| i as i32));
     }
 
     #[test]

@@ -9,31 +9,36 @@ VST3 + CLAP, written in Rust with [nih-plug](https://github.com/robbert-vdh/nih-
 
 ## Styles
 
-| Style | Feel | Tempo |
-|---|---|---|
-| UK Garage | swung 2-step, minor 7th/9th organ stabs that dodge beat one, bouncing sub | 132 |
-| Deep House | dorian 9ths on the off-beats, rolling bass | 122 |
-| Dub / Reggae | one or two minor chords skanked on 2 and 4, the bass carries the tune | 72 |
-| Dub Techno | one hypnotic minor chord stab over a steady sub, made for delays | 120 |
-| Soul | major 7ths and ii-V moves, legato, walking bass | 92 |
-| Lo-fi Hip-hop | jazzy 7ths, heavy swing | 82 |
-| Disco / Nu-disco | off-beat chord chops, octave bass | 118 |
-| Ambient / Cinematic | long minor chords, slow melody | 90 |
+36 electronic styles in 9 families. Each one sets the scale, the chord progressions that suit it, the swing and a groove for every part:
 
-The plugin follows your project tempo; the tempo column is what the `.mid` export uses.
+| Family | Styles |
+|---|---|
+| House | House, Deep House, Tech House, Afro House, Amapiano |
+| Techno | Techno, Minimal, Dub Techno, Detroit Techno, Acid, Hard Techno |
+| Trance | Trance, Progressive, Psytrance |
+| UK & Bass | UK Garage, Bassline, Drum & Bass, Liquid DnB, Jungle, Dubstep |
+| Breaks & Electro | Breakbeat, Electro, Footwork / Juke |
+| Disco & Funk | Disco / Nu-disco, Italo Disco, Funk / Boogie, Soul |
+| Dub & Roots | Dub / Reggae, Dancehall |
+| Downtempo | Ambient, Trip-hop, Lo-fi Hip-hop, Downtempo / Chill, IDM, Synthwave |
+| Hard | Hardcore / Gabber |
+
+The plugin follows your project tempo; each style's typical tempo (shown in the style menu) is what the `.mid` export uses when there's no host tempo. `momotone styles` lists them all.
 
 ## The screen
 
 ![Momotone](docs/momotone-ui.png)
 
-1. **Style**: pick a genre. **Key**: pick a root note (the style picks the scale). **Bars**: loop length.
-2. **Energy**: drag from *laid back* to *peak time*. Double-click resets to 50 %.
-3. **New idea**: jumps to a random idea in the style; ◀ ▶ step through ideas one by one. The number is saved with your project.
-4. **Chords**: the progression, with the Roman numeral under each chord. Click one to read what it does. While playing, the current chord is outlined in green.
-5. **Parts**: turn each part on or off, shift its octave, and see its notes. The playhead follows your DAW.
-6. **Export MIDI loop**: writes a folder to `~/Music/Momotone/` (named after style, key, tempo, energy and idea) with one `.mid` per part plus `All parts.mid`. Add that folder to Live's *Places* once, and every export shows up in the browser, ready to drag onto your machine tracks or a Push clip slot.
+- **Style / Key / Bars**: dropdowns. The style menu is grouped by family and shows each style's tempo; the scale comes with the style.
+- **Energy** knob: *laid back* → *peak time*. **Idea** knob: browse ideas; ◀ ▶ step one by one, **New idea** jumps to a random one. Knobs: drag up/down, Shift for fine, double-click to reset.
+- **Chords**: hover a chord to read what it does; the one playing is outlined in mint.
+- **Parts**: click the name to switch a part on/off, small knob = octave, then its notes with the playhead.
+- **Role / Group**: main or follower (see the workflow below).
+- **Export MIDI loop**: writes a folder to `~/Music/Momotone/` (style, key, tempo, energy, idea) with one `.mid` per part plus `All parts.mid`. Add that folder to Live's *Places* once and every export shows up in the browser.
 
 No DAW at hand? `cargo run --release -p momotone-plugin --features standalone` opens the same screen as an app.
+
+Fonts: [Audiowide](https://fonts.google.com/specimen/Audiowide) and [Share Tech Mono](https://fonts.google.com/specimen/Share+Tech+Mono), both under the SIL Open Font License (`crates/momotone-plugin/assets/fonts/`).
 
 ## Parameters
 
@@ -42,7 +47,7 @@ No DAW at hand? `cargo run --release -p momotone-plugin --features standalone` o
 | Role | **Main** (you play it) or **Follower** (plays one part of its group's main) |
 | Link group | 1..4: a follower follows the main of the same group |
 | Follower part | The part a follower plays: Chords, Bass, Arp or Melody |
-| Style | One of the styles above: harmony, grooves and swing |
+| Style | One of the 36 styles above: harmony, grooves and swing (shown by name in the DAW) |
 | Key | Root note. The style picks the scale |
 | Energy | 0 % sparse and laid back → 100 % busy and peak-time. It only adds or removes ghost notes and fills; the core groove never moves |
 | Variation | 1..500. Each number is a different idea. Saved with your project, so you can always get it back |
@@ -147,7 +152,6 @@ UK garage bass     "0..3..1.....2.4.0..3..1...5.2..7"   (2 bars)
 - [ ] Per-part MIDI channel and velocity curves, humanize
 - [ ] Drum part (kick/snare/hats grids per style) for drum machines
 - [ ] Follow mode: play a note on the Push to set the key live
-- [ ] More styles: breakbeat, afro house, steppers, electro
 
 ## License
 

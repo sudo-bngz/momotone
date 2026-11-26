@@ -1,33 +1,7 @@
 use nih_plug::prelude::*;
+use momotone_engine::style::{index_of, STYLES};
 use nih_plug_egui::EguiState;
 use std::sync::Arc;
-
-/// Must stay in the same order as `momotone_engine::STYLES` (a test checks it).
-#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
-pub enum StyleChoice {
-    #[name = "UK Garage"]
-    Ukg,
-    #[name = "Deep House"]
-    DeepHouse,
-    #[name = "Dub / Reggae"]
-    Dub,
-    #[name = "Dub Techno"]
-    DubTechno,
-    #[name = "Soul"]
-    Soul,
-    #[name = "Lo-fi Hip-hop"]
-    Lofi,
-    #[name = "Disco / Nu-disco"]
-    Disco,
-    #[name = "Ambient / Cinematic"]
-    Ambient,
-}
-
-impl StyleChoice {
-    pub fn index(self) -> usize {
-        self as usize
-    }
-}
 
 /// Main: the instance you play with. Follower: plays one part of its group's main.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
@@ -79,7 +53,7 @@ fn octave(name: &str) -> IntParam {
 #[derive(Params)]
 pub struct MomotoneParams {
     /// Window size, saved with the project. (v2: the window grew with the link row.)
-    #[persist = "editor-size-v2"]
+    #[persist = "editor-size-v3"]
     pub editor_state: Arc<EguiState>,
 
     #[id = "role"]
@@ -91,8 +65,9 @@ pub struct MomotoneParams {
     #[id = "part"]
     pub part: EnumParam<PartChoice>,
 
+    /// Index into `momotone_engine::STYLES`; shown by name in the DAW.
     #[id = "style"]
-    pub style: EnumParam<StyleChoice>,
+    pub style: IntParam,
     #[id = "key"]
     pub key: EnumParam<KeyChoice>,
     /// Sparse and laid back (0 %) to busy and peak-time (100 %).
@@ -136,7 +111,12 @@ impl Default for MomotoneParams {
             role: EnumParam::new("Role", RoleChoice::Main),
             group: IntParam::new("Link group", 1, IntRange::Linear { min: 1, max: crate::link::GROUPS as i32 }),
             part: EnumParam::new("Follower part", PartChoice::Bass),
-            style: EnumParam::new("Style", StyleChoice::Ukg),
+            style: IntParam::new("Style", index_of("ukg").unwrap_or(0) as i32, IntRange::Linear { min: 0, max: STYLES.len() as i32 - 1 })
+                .with_value_to_string(Arc::new(|v| STYLES[(v.max(0) as usize).min(STYLES.len() - 1)].label.to_string()))
+                .with_string_to_value(Arc::new(|text| {
+                    let t = text.trim();
+                    STYLES.iter().position(|s| s.id == t || s.label.eq_ignore_ascii_case(t)).map(|i| i as i32)
+                })),
             key: EnumParam::new("Key", KeyChoice::A),
             energy: FloatParam::new("Energy", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_unit(" %")
