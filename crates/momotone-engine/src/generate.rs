@@ -216,10 +216,6 @@ struct Hit {
 
 /// Lays a grid over the whole pattern at the current energy. Each note lasts `gate` of the
 /// gap to the next hit, capped at `max_len` and at the pattern end.
-fn hits(plan: &Plan, g: &str, gate: f64, max_len: f64) -> Vec<Hit> {
-    hits_of(plan, &grid::parse(g), gate, max_len)
-}
-
 fn hits_of(plan: &Plan, cells: &[Option<u8>], gate: f64, max_len: f64) -> Vec<Hit> {
     let level = grid::level(plan.energy);
     let end = plan.length_beats();
@@ -251,8 +247,24 @@ fn vel(rng: &mut Rng, plan: &Plan, step: usize, threshold: u8) -> u8 {
 
 fn chords(plan: &Plan, voicings: &[Vec<i32>], rng: &mut Rng, out: &mut Vec<Note>) {
     let part = &plan.style.chords;
+    // This idea's chord rhythm: the style's, shaken up, or shifted against the beat; and
+    // played shorter or longer.
+    let mut feel = rng.fork(0xC0);
+    let cells = match feel.weighted(&[0.2, 0.5, 0.3]) {
+        0 => grid::parse(part.grid),
+        1 => shake(&mut feel, part.grid, Shake { drop: 0.3, extra: (1, 4), lowest: 1, off_beat: true }),
+        _ => {
+            let mut c = shake(&mut feel, part.grid, Shake { drop: 0.15, extra: (0, 2), lowest: 2, off_beat: true });
+            let shift = *feel.pick(&[2usize, 3, 6, 10]);
+            let n = c.len();
+            c.rotate_right(shift % n);
+            c
+        }
+    };
+    let stretch = *feel.pick(&[0.6, 0.8, 1.0, 1.0, 1.3, 1.6]);
+    let (gate, max_len) = ((part.gate * stretch).min(0.98), part.max_len * stretch);
     let mut per_chord: Vec<Vec<Hit>> = vec![Vec::new(); plan.progression.len()];
-    for mut h in hits(plan, part.grid, part.gate, part.max_len) {
+    for mut h in hits_of(plan, &cells, gate, max_len) {
         let i = plan.chord_index(h.start);
         let (s, l) = plan.chord_span(i);
         h.len = h.len.min(s + l - h.start).max(0.05);
@@ -262,7 +274,7 @@ fn chords(plan: &Plan, voicings: &[Vec<i32>], rng: &mut Rng, out: &mut Vec<Note>
         if hs.is_empty() {
             // Short chord span between two grid hits: still let the chord be heard.
             let (s, l) = plan.chord_span(i);
-            hs.push(Hit { step: (s / grid::STEP).round() as usize, start: s, len: (l * part.gate).min(part.max_len).max(0.05), threshold: 0 });
+            hs.push(Hit { step: (s / grid::STEP).round() as usize, start: s, len: (l * gate).min(max_len).max(0.05), threshold: 0 });
         }
         for h in hs.iter() {
             for &p in &voicings[i] {
@@ -286,9 +298,34 @@ fn bass_root(chord: &Chord, plan: &Plan) -> i32 {
 
 fn bass(plan: &Plan, rng: &mut Rng, out: &mut Vec<Note>) {
     let part = &plan.style.bass;
-    let tones = part.tones.as_bytes();
     let n = plan.progression.len();
-    for h in hits(plan, part.grid, part.gate, part.max_len) {
+    // This idea's bassline: the style's rhythm with some hits moved between energy levels,
+    // a few new syncopations, and other chord tones (octave, fifth, third, approach notes)
+    // on the off-beat hits. The first hit of each bar stays the root.
+    let mut feel = rng.fork(0xBA);
+    let written = grid::parse(part.grid);
+    let cells = if feel.chance(0.25) {
+        written.clone()
+    } else {
+        shake(&mut feel, part.grid, Shake { drop: 0.25, extra: (1, 4), lowest: 2, off_beat: true })
+    };
+    let src = part.tones.as_bytes();
+    let busy = feel.chance(0.3);
+    let tones: Vec<u8> = (0..cells.len())
+        .map(|s| {
+            let t = src[s % src.len()];
+            let new_hit = cells[s].is_some() && written[s % written.len()].is_none();
+            if s % grid::STEPS_PER_BAR == 0 {
+                b'r'
+            } else if new_hit || feel.chance(if busy { 0.5 } else { 0.25 }) {
+                *feel.pick(b"rrr8885533a")
+            } else {
+                t
+            }
+        })
+        .collect();
+    let stretch = *feel.pick(&[0.6, 0.8, 1.0, 1.0, 1.2]);
+    for h in hits_of(plan, &cells, (part.gate * stretch).min(0.98), part.max_len * stretch) {
         let i = plan.chord_index(h.start);
         let chord = &plan.progression[i];
         let root = bass_root(chord, plan);
@@ -322,10 +359,18 @@ fn bass(plan: &Plan, rng: &mut Rng, out: &mut Vec<Note>) {
 
 fn arp(plan: &Plan, voicings: &[Vec<i32>], rng: &mut Rng, out: &mut Vec<Note>) {
     let part = &plan.style.arp;
+    let mut feel = rng.fork(0xA4);
+    let cells = if feel.chance(0.3) {
+        grid::parse(part.grid)
+    } else {
+        shake(&mut feel, part.grid, Shake { drop: 0.2, extra: (0, 3), lowest: 2, off_beat: false })
+    };
+    let stretch = *feel.pick(&[0.5, 0.8, 1.0, 1.0, 1.5]);
+    let (gate, max_len) = ((part.gate * stretch).min(0.98), part.max_len * stretch);
     let mut current = usize::MAX;
     let mut k = 0usize;
     let mut last = usize::MAX;
-    for h in hits(plan, part.grid, part.gate, part.max_len) {
+    for h in hits_of(plan, &cells, gate, max_len) {
         let i = plan.chord_index(h.start);
         if i != current {
             current = i;
@@ -458,6 +503,44 @@ enum Voice {
     Hat,
     OpenHat,
     Perc,
+}
+
+/// How [`shake`] varies a melodic part's grid.
+struct Shake {
+    /// Chance that an optional hit sits this idea out.
+    drop: f64,
+    /// How many new hits come in (min, max).
+    extra: (i32, i32),
+    /// Lowest energy threshold for a new hit (they're never part of the core groove).
+    lowest: u8,
+    /// New hits avoid the main beats (syncopation).
+    off_beat: bool,
+}
+
+/// One idea's take on a part's grid, two bars long. The core hits (threshold 0) stay;
+/// optional hits move to another energy level or drop out; a few new ones come in. Drawn
+/// without looking at Energy, so Energy still only adds notes.
+fn shake(rng: &mut Rng, grid: &str, sh: Shake) -> Vec<Option<u8>> {
+    use crate::grid::STEPS_PER_BAR as BAR;
+    let src = grid::parse(grid);
+    let n = src.len().max(2 * BAR);
+    let mut cells: Vec<Option<u8>> = (0..n).map(|s| src[s % src.len()]).collect();
+    for c in cells.iter_mut() {
+        if let Some(t) = *c {
+            if t == 0 {
+                continue;
+            }
+            *c = if rng.chance(sh.drop) { None } else { Some((t as i32 + rng.range(-2, 2)).clamp(1, 9) as u8) };
+        }
+    }
+    for _ in 0..rng.range(sh.extra.0, sh.extra.1) {
+        let step = rng.range(0, n as i32 - 1) as usize;
+        let beat = step.is_multiple_of(4);
+        if cells[step].is_none() && !(sh.off_beat && beat) {
+            cells[step] = Some(rng.range(sh.lowest as i32, 6) as u8);
+        }
+    }
+    cells
 }
 
 /// One idea's take on a kit grid, two bars long (the second bar answers the first). The
@@ -788,6 +871,43 @@ mod tests {
                 let row: String = (0..plan.total_steps()).map(|s| if p.notes.iter().any(|n| n.pitch == pitch && (n.start - plan.step_time(s)).abs() < 1e-6) { 'x' } else { '.' }).collect();
                 println!("  {name} {row}");
             }
+        }
+    }
+
+    #[test]
+    fn each_idea_changes_chords_rhythm_and_bass() {
+        use std::collections::HashSet;
+        for style in crate::style::STYLES.iter() {
+            let (mut progs, mut rhythms, mut basses) = (HashSet::new(), HashSet::new(), HashSet::new());
+            for idea in 1..=12u64 {
+                let plan = style.plan(PitchClass::parse("C").unwrap(), 4, 0.6, idea);
+                let p = generate(&plan, Layers::all(), idea);
+                let q = (p.notes.iter()).map(|n| (n.layer, n.pitch, (n.start * 4.0).round() as i64));
+                progs.insert(plan.chord_names());
+                rhythms.insert(q.clone().filter(|n| n.0 == Layer::Chords).map(|n| n.2).collect::<Vec<_>>());
+                basses.insert(q.filter(|n| n.0 == Layer::Bass).map(|n| (n.1, n.2)).collect::<Vec<_>>());
+            }
+            assert!(progs.len() >= 5, "{}: {} progressions in 12 ideas", style.id, progs.len());
+            assert!(rhythms.len() >= 6, "{}: {} chord rhythms in 12 ideas", style.id, rhythms.len());
+            assert!(basses.len() >= 8, "{}: {} basslines in 12 ideas", style.id, basses.len());
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn print_ideas() {
+        let style = crate::style::find(&std::env::var("STYLE").unwrap_or("dub-techno".into())).unwrap();
+        for idea in 1..=6u64 {
+            let plan = style.plan(PitchClass::parse("F").unwrap(), 2, 0.7, idea);
+            let p = generate(&plan, Layers::all(), idea);
+            println!("idea {idea}: {}", plan.chord_names().join(" "));
+            let row = |l: Layer| -> String {
+                (0..plan.total_steps()).map(|s| if p.notes.iter().any(|n| n.layer == l && (n.start - plan.step_time(s)).abs() < 1e-6) { 'x' } else { '.' }).collect()
+            };
+            println!("  chords {}", row(Layer::Chords));
+            println!("  bass   {}", row(Layer::Bass));
+            let bass: Vec<String> = p.notes.iter().filter(|n| n.layer == Layer::Bass).map(|n| crate::PitchClass::from_semitone(n.pitch as i32).name(true).to_string()).collect();
+            println!("  notes  {}", bass.join(" "));
         }
     }
 

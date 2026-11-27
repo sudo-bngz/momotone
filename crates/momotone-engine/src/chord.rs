@@ -176,9 +176,10 @@ impl Chord {
             } else {
                 (10, "7")
             }
-        } else if has(3) {
+        } else if has(3) && key.contains(key.root.semitone() + self.root + 10) {
             (10, "7")
         } else {
+            // Minor chord whose b7 isn't in the key (i in harmonic minor): stays a triad.
             return self.clone();
         };
         let mut intervals = self.intervals.clone();

@@ -819,7 +819,7 @@ impl Style {
     pub fn plan(&'static self, root: PitchClass, bars: u32, energy: f64, seed: u64) -> Plan {
         let mut rng = Rng::new(seed).fork(0x7374796C);
         let key = Scale::new(root, self.mode);
-        let symbols = rng.pick(self.progressions);
+        let symbols = crate::harmony::progression(&mut rng, self.mode, self.progressions);
         let progression = symbols
             .iter()
             .map(|s| {
